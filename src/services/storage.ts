@@ -1,5 +1,5 @@
 import { StockItem, TabConfig, SyncSettings } from '../types';
-import { getAutoTseJapaneseInfo, calculateDynamicMarketCap, getUniversalStockHistoricalPrices } from './tseMaster';
+import { getAutoTseJapaneseInfo, calculateDynamicMarketCap } from './tseMaster';
 
 const STORAGE_KEYS = {
   STOCKS: 'stock_portfolio_items_v2',
@@ -77,9 +77,31 @@ export function getStoredStocks(): StockItem[] {
   }
 }
 
+export function cleanStockForStorage(stock: StockItem): StockItem {
+  if (!stock) return stock;
+  const { chartHistory, ...rest } = stock;
+  return {
+    ...rest,
+    financialNotes: Array.isArray(stock.financialNotes) 
+      ? stock.financialNotes.map(n => ({
+          id: n.id,
+          date: n.date,
+          title: n.title,
+          evaluation: n.evaluation,
+          comment: n.comment,
+          pinned: n.pinned,
+          updatedAt: n.updatedAt
+        }))
+      : [],
+    irComments: Array.isArray(stock.irComments) ? stock.irComments : [],
+    featureNotes: Array.isArray(stock.featureNotes) ? stock.featureNotes : []
+  };
+}
+
 export function saveStocks(stocks: StockItem[]): void {
   try {
-    localStorage.setItem(STORAGE_KEYS.STOCKS, JSON.stringify(stocks));
+    const cleaned = (stocks || []).map(cleanStockForStorage);
+    localStorage.setItem(STORAGE_KEYS.STOCKS, JSON.stringify(cleaned));
   } catch (e) {
     console.error('Failed to save stocks:', e);
   }
@@ -178,108 +200,158 @@ export function formatMarketCap(marketCapInOku: number): string {
   return `${Math.round(marketCapInOku).toLocaleString()}億円`;
 }
 
-export function parseAndImportCSV(csvText: string): { success: boolean; count: number; stocks: StockItem[] } {
-  try {
-    const cleanText = csvText.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    const lines = cleanText.split('\n').filter((line) => line.trim().length > 0);
 
-    if (lines.length <= 1) {
-      return { success: false, count: 0, stocks: [] };
+
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+export function parseAndImportHorizontalFinancialCSV(csvText: string): { success: boolean; importedNotesCount: number; affectedStocksCount: number; stocks: StockItem[] } {
+  try {
+    const currentStocks = getStoredStocks();
+    if (!currentStocks || currentStocks.length === 0) {
+      return { success: false, importedNotesCount: 0, affectedStocksCount: 0, stocks: [] };
     }
 
-    const todayStr = new Date().toISOString().split('T')[0];
-    const importedStocks: StockItem[] = [];
-
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i];
-      const cells = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g) || line.split(',');
-      const cleanedCells = cells.map((cell) => cell.replace(/^"|"$/g, '').trim());
-
-      if (cleanedCells.length >= 2) {
-        const code = (cleanedCells[0] || '').trim().toUpperCase();
-        const rawName = cleanedCells[1] || '';
-        if (!code || code === 'コード') continue;
-
-        const currentPrice = parseFloat(cleanedCells[2]) || 2000;
-        const previousPrice = parseFloat(cleanedCells[3]) || currentPrice;
-        const changePrevPct = parseFloat(cleanedCells[4]) || 0;
-
-        const change5dPct = parseFloat(cleanedCells[5]) || 0;
-        const change20dPct = parseFloat(cleanedCells[6]) || 0;
-        const changeYtdPct = parseFloat(cleanedCells[7]) || 0;
-
-        const price5DaysAgo = Math.round(currentPrice / (1 + change5dPct / 100));
-        const price20DaysAgo = Math.round(currentPrice / (1 + change20dPct / 100));
-        const priceYearStart = Math.round(currentPrice / (1 + changeYtdPct / 100));
-
-        let adoptDate = '2024-08-01';
-        const rawAdoptCell = cleanedCells[8];
-        if (rawAdoptCell && /^\d{4}-\d{2}-\d{2}$/.test(rawAdoptCell)) {
-          adoptDate = rawAdoptCell;
+    const cleanText = csvText.replace(/^\uFEFF/, '');
+    
+    // カンマ区切りかつ改行対応の行分割
+    const rawLines: string[] = [];
+    let curLine = '';
+    let inQ = false;
+    for (let i = 0; i < cleanText.length; i++) {
+      const char = cleanText[i];
+      if (char === '"') {
+        inQ = !inQ;
+        curLine += char;
+      } else if ((char === '\n' || char === '\r') && !inQ) {
+        if (char === '\r' && cleanText[i + 1] === '\n') {
+          i++;
         }
-
-        const adoptPrice = parseFloat(cleanedCells[9]) || currentPrice;
-        const changeAdoptPct = parseFloat(cleanedCells[10]) || Number((((currentPrice - adoptPrice) / adoptPrice) * 100).toFixed(2));
-
-        const tseInfo = getAutoTseJapaneseInfo(code, rawName);
-        const sector = (cleanedCells[11] && cleanedCells[11] !== 'その他') ? cleanedCells[11] : tseInfo.sector;
-        
-        const marketCap = calculateDynamicMarketCap(code, currentPrice);
-        const scale = marketCap >= 5000 ? '大型' : marketCap <= 1000 ? '小型' : '中型';
-
-        const item: StockItem = {
-          id: `imported-${code}-${Date.now()}-${i}`,
-          code,
-          name: tseInfo.name,
-          currentPrice,
-          previousPrice,
-          changePrevPct,
-          price5DaysAgo,
-          change5dPct,
-          price20DaysAgo,
-          change20dPct,
-          priceYearStart,
-          changeYtdPct,
-          adoptDate,
-          adoptPrice,
-          changeAdoptPct,
-          sector,
-          marketCap,
-          scale,
-          tabId: 'tab-30',
-          financialNotes: [],
-          irComments: [
-            {
-              id: `ir-imported-${i}`,
-              date: todayStr,
-              title: 'CSVファイルよりインポート復元完了',
-              category: '定性メモ・分析',
-              content: `CSV保存ファイルより銘柄 [${code}] ${tseInfo.name} を無事復元取り込みいたしました。`,
-              author: 'データ復元',
-              tags: ['CSV復元'],
-              createdAt: new Date().toISOString()
-            }
-          ],
-          updatedAt: new Date().toISOString()
-        };
-
-        importedStocks.push(item);
+        if (curLine.trim().length > 0) {
+          rawLines.push(curLine);
+        }
+        curLine = '';
+      } else {
+        curLine += char;
       }
     }
-
-    if (importedStocks.length > 0) {
-      saveStocks(importedStocks);
-      return { success: true, count: importedStocks.length, stocks: importedStocks };
+    if (curLine.trim().length > 0) {
+      rawLines.push(curLine);
     }
 
-    return { success: false, count: 0, stocks: [] };
+    let importedNotesCount = 0;
+    let affectedStocksCount = 0;
+
+    const stocksMap = new Map<string, StockItem>();
+    currentStocks.forEach(s => stocksMap.set(s.code.toUpperCase(), { ...s }));
+
+    rawLines.forEach(line => {
+      const cells = parseCSVLine(line);
+      if (cells.length < 3) return;
+
+      const code = cells[0].toUpperCase().replace(/[^0-9A-Z]/g, '');
+      if (!code) return;
+
+      const targetStock = stocksMap.get(code);
+      if (!targetStock) return;
+
+      let stockNotesAdded = 0;
+      const newNotes: any[] = [];
+
+      for (let i = 1; i < cells.length; i += 2) {
+        const rawDate = (cells[i] || '').trim();
+        const rawComment = (cells[i + 1] || '').trim();
+
+        if (!rawDate && !rawComment) continue;
+
+        // 日付の正規化 (YYYY/MM/DD, YYYY-MM-DD, YYYYMMDD 等)
+        let formattedDate = rawDate;
+        const dateMatch = rawDate.match(/^(\d{4})[/-]?(\d{1,2})[/-]?(\d{1,2})$/);
+        if (dateMatch) {
+          const y = dateMatch[1];
+          const m = dateMatch[2].padStart(2, '0');
+          const d = dateMatch[3].padStart(2, '0');
+          formattedDate = `${y}-${m}-${d}`;
+        }
+
+        newNotes.push({
+          id: `fin-imp-${code}-${Date.now()}-${i}`,
+          date: formattedDate,
+          title: '',
+          evaluation: '未選択',
+          comment: rawComment,
+          updatedAt: new Date().toISOString()
+        });
+
+        stockNotesAdded++;
+        importedNotesCount++;
+      }
+
+      if (stockNotesAdded > 0) {
+        affectedStocksCount++;
+        const existingNotes = Array.isArray(targetStock.financialNotes) ? targetStock.financialNotes : [];
+        targetStock.financialNotes = [...newNotes, ...existingNotes];
+      }
+    });
+
+    if (importedNotesCount > 0) {
+      const updatedStocksList = Array.from(stocksMap.values());
+      saveStocks(updatedStocksList);
+      return { success: true, importedNotesCount, affectedStocksCount, stocks: updatedStocksList };
+    }
+
+    return { success: false, importedNotesCount: 0, affectedStocksCount: 0, stocks: currentStocks };
   } catch (e) {
-    console.error('CSV parse error:', e);
-    return { success: false, count: 0, stocks: [] };
+    console.error('Horizontal CSV import error:', e);
+    return { success: false, importedNotesCount: 0, affectedStocksCount: 0, stocks: [] };
   }
 }
 
-export function parseAndImportJSON(jsonText: string): { success: boolean; count: number; stocks: StockItem[] } {
+export async function fetchRemoteJSON(url: string): Promise<{ success: boolean; count: number; stocks: StockItem[]; tabs: TabConfig[] }> {
+  try {
+    const res = await fetch(url, { cache: 'no-cache' });
+    if (!res.ok) {
+      return { success: false, count: 0, stocks: [], tabs: [] };
+    }
+    const text = await res.text();
+    const parsed = JSON.parse(text);
+    if (parsed && Array.isArray(parsed.stocks) && parsed.stocks.length > 0) {
+      const stocks: StockItem[] = parsed.stocks.map((s: StockItem) => {
+        const info = getAutoTseJapaneseInfo(s.code, s.name);
+        return { ...s, name: info.name, sector: info.sector || s.sector };
+      });
+      const tabs = Array.isArray(parsed.tabs) && parsed.tabs.length > 0 ? parsed.tabs : DEFAULT_TABS;
+      return { success: true, count: stocks.length, stocks, tabs };
+    }
+    return { success: false, count: 0, stocks: [], tabs: [] };
+  } catch (e) {
+    console.error('Failed to fetch remote JSON:', e);
+    return { success: false, count: 0, stocks: [], tabs: [] };
+  }
+}
+
+export function parseAndImportJSON(jsonText: string): { success: boolean; count: number; stocks: StockItem[]; tabs?: TabConfig[] } {
   try {
     const parsed = JSON.parse(jsonText);
     if (parsed && Array.isArray(parsed.stocks) && parsed.stocks.length > 0) {
@@ -307,57 +379,27 @@ export async function initializeDefaultData(): Promise<{ stocks: StockItem[]; ta
   return { stocks: existingStocks, tabs: existingTabs };
 }
 
-export function exportDataAsCSV(stocks: StockItem[]): void {
-  if (!stocks || stocks.length === 0) {
-    alert('エクスポート対象の銘柄データがありません。');
-    return;
-  }
 
-  const headers = ['コード', '銘柄名', '現在価格', '前日価格', '前日比(%)', '5日前比(%)', '20日前比(%)', '年始比(%)', '採用日', '採用時価格', '採用時比(%)', 'セクター', '時価総額(億円)', '規模'];
-  const rows = stocks.map((s) => {
-    const info = getAutoTseJapaneseInfo(s.code, s.name);
-    let adoptDateVal = '2024-08-01';
-    if (typeof s.adoptDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.adoptDate)) {
-      adoptDateVal = s.adoptDate;
-    }
-
-    return [
-      s.code,
-      `"${info.name}"`,
-      s.currentPrice || 0,
-      s.previousPrice || 0,
-      s.changePrevPct || 0,
-      s.change5dPct || 0,
-      s.change20dPct || 0,
-      s.changeYtdPct || 0,
-      adoptDateVal,
-      s.adoptPrice || 0,
-      s.changeAdoptPct || 0,
-      `"${info.sector || s.sector || 'その他'}"`,
-      s.marketCap || 0,
-      s.scale || '中型'
-    ].join(',');
-  });
-
-  const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n');
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', `stock_portfolio_${new Date().toISOString().split('T')[0]}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-}
 
 export function exportDataAsJSON(stocks: StockItem[], tabs: TabConfig[]): void {
+  const rawOriginalSize = JSON.stringify({ tabs, stocks }, null, 2).length;
+
+  const cleanedStocks = (stocks || []).map(cleanStockForStorage);
   const data = {
     exportedAt: new Date().toISOString(),
     version: '2.0',
     tabs,
-    stocks
+    stocks: cleanedStocks
   };
-  const jsonContent = JSON.stringify(data, null, 2);
+  const jsonContent = JSON.stringify(data);
+  const optimizedSize = jsonContent.length;
+
+  const originalKB = (rawOriginalSize / 1024).toFixed(1);
+  const optimizedKB = (optimizedSize / 1024).toFixed(1);
+  const reductionPct = Math.round(((rawOriginalSize - optimizedSize) / Math.max(1, rawOriginalSize)) * 100);
+
+  alert(`【JSONデータの高速軽量化を実行しました】\n\n・最適化前: 約 ${originalKB} KB (${(rawOriginalSize / 1024 / 1024).toFixed(2)} MB)\n・最適化後: 約 ${optimizedKB} KB (${(optimizedSize / 1024 / 1024).toFixed(2)} MB)\n・容量削減率: 【 ${reductionPct}% 削減 】\n\n無駄な自動キャッシュを削ぎ落とした軽量JSONファイルをダウンロードします。`);
+
   const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');

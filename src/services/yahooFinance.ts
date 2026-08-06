@@ -5,6 +5,7 @@ export interface StockFullProfile {
   price20DaysAgo: number;
   priceYearStart: number;
   adoptPrice?: number;
+  marketCap?: number;
 }
 
 function formatSymbol(code: string): string {
@@ -145,51 +146,85 @@ export async function fetchJpStockFullProfile(code: string, adoptDateStr?: strin
   const sym = formatSymbol(code);
   
   try {
-    // 1. 最新、前日、5日、20日前を取得
     const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=3mo&interval=1d`;
     const json = await fetchViaProxy(targetUrl);
     const result = json?.chart?.result?.[0];
     if (!result) return null;
     
+    const meta = result.meta;
     const quotes = result.indicators?.quote?.[0]?.close;
-    if (!quotes) return null;
     
     const validQuotes: number[] = [];
-    for (let i = 0; i < quotes.length; i++) {
-      const q = quotes[i];
-      if (q !== null && q !== undefined && !isNaN(q)) {
-        validQuotes.push(q);
+    if (Array.isArray(quotes)) {
+      for (let i = 0; i < quotes.length; i++) {
+        const q = quotes[i];
+        if (q !== null && q !== undefined && !isNaN(q) && q > 0) {
+          validQuotes.push(q);
+        }
       }
     }
     
-    if (validQuotes.length === 0) return null;
+    // 1. 最新営業日確定価格 (8/6大引け値など) の確定
+    let currentPrice = meta?.regularMarketPrice;
+    let isMetaValid = false;
+
+    if (currentPrice && currentPrice > 0) {
+      isMetaValid = true;
+      currentPrice = Math.round(currentPrice * 100) / 100;
+    } else if (validQuotes.length > 0) {
+      currentPrice = Math.round(validQuotes[validQuotes.length - 1] * 100) / 100;
+    } else {
+      return null;
+    }
+
+    // 2. 前営業日確定終値 (8/5引け値など) の確定
+    let previousPrice = 0;
+    if (isMetaValid && validQuotes.length > 0) {
+      const lastQuote = Math.round(validQuotes[validQuotes.length - 1] * 100) / 100;
+      if (Math.abs(lastQuote - currentPrice) > 0.01) {
+        previousPrice = lastQuote;
+      } else if (validQuotes.length >= 2) {
+        previousPrice = Math.round(validQuotes[validQuotes.length - 2] * 100) / 100;
+      } else {
+        previousPrice = currentPrice;
+      }
+    } else if (validQuotes.length >= 2) {
+      previousPrice = Math.round(validQuotes[validQuotes.length - 2] * 100) / 100;
+    } else {
+      previousPrice = currentPrice;
+    }
+
+    // 3. 5営業日前、20営業日前価格の確実な遡及算出
+    const offset = (isMetaValid && validQuotes.length > 0 && Math.abs(validQuotes[validQuotes.length - 1] - currentPrice) > 0.01) ? 1 : 0;
     
-    const currentPrice = Math.round(validQuotes[validQuotes.length - 1] * 100) / 100;
-    const previousPrice = validQuotes.length >= 2 
-      ? Math.round(validQuotes[validQuotes.length - 2] * 100) / 100 
-      : currentPrice;
-    const price5DaysAgo = validQuotes.length > 5 
-      ? Math.round(validQuotes[validQuotes.length - 1 - 5] * 100) / 100 
-      : previousPrice;
-    const price20DaysAgo = validQuotes.length > 20 
-      ? Math.round(validQuotes[validQuotes.length - 1 - 20] * 100) / 100 
+    const idx5 = validQuotes.length - 5 - offset;
+    const price5DaysAgo = idx5 >= 0 
+      ? Math.round(validQuotes[idx5] * 100) / 100 
       : previousPrice;
 
-    // 2. 年始価格を取得
+    const idx20 = validQuotes.length - 20 - offset;
+    const price20DaysAgo = idx20 >= 0 
+      ? Math.round(validQuotes[idx20] * 100) / 100 
+      : previousPrice;
+
+    // 年始価格
     let priceYearStart = price20DaysAgo;
     const ytdPrice = await fetchJpStockYearStartPrice(code);
-    if (ytdPrice !== null) {
+    if (ytdPrice !== null && ytdPrice > 0) {
       priceYearStart = ytdPrice;
     }
 
-    // 3. 採用日価格をピンポイントの期間タイムスタンプ（指定日前15日〜後2日）で安全取得（1年以上古い日付も100%取得可能）
+    // 採用日価格
     let adoptPrice = undefined;
     if (adoptDateStr) {
       const datePrice = await fetchJpStockDatePrice(code, adoptDateStr);
-      if (datePrice !== null) {
+      if (datePrice !== null && datePrice > 0) {
         adoptPrice = datePrice;
       }
     }
+
+    // 時価総額 (億円) の取得
+    const marketCap = await fetchJpStockMarketCap(code);
 
     return {
       currentPrice,
@@ -197,10 +232,33 @@ export async function fetchJpStockFullProfile(code: string, adoptDateStr?: strin
       price5DaysAgo,
       price20DaysAgo,
       priceYearStart,
-      adoptPrice
+      adoptPrice,
+      marketCap: marketCap || undefined
     };
   } catch (e) {
     console.error(`fetchJpStockFullProfile failed for code: ${code}`, e);
+  }
+  return null;
+}
+
+export async function fetchJpStockMarketCap(code: string): Promise<number | null> {
+  if (!code) return null;
+  const cleanCode = code.replace('.T', '').trim();
+  const targetUrl = `https://finance.yahoo.co.jp/quote/${cleanCode}.T`;
+  
+  try {
+    const rawText = await fetchViaProxy(targetUrl);
+    if (typeof rawText === 'string') {
+      const match = rawText.match(/時価総額[\s\S]*?_StyledNumber__value[^>]*?>([\d,]+)<\/span>/);
+      if (match && match[1]) {
+        const rawHyakuman = parseFloat(match[1].replace(/,/g, ''));
+        if (!isNaN(rawHyakuman) && rawHyakuman > 0) {
+          return Math.round(rawHyakuman / 100);
+        }
+      }
+    }
+  } catch (e) {
+    // ignore
   }
   return null;
 }

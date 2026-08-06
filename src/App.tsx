@@ -1,16 +1,15 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { StockItem, TabConfig, SyncSettings } from './types';
-import { getAutoTseJapaneseInfo } from './services/tseMaster';
+import { getAutoTseJapaneseInfo, applyJapaneseNamesToAllStocks } from './services/tseMaster';
 import {
   initializeDefaultData,
   saveStocks,
   saveTabs,
   getSyncSettings,
   saveSyncSettings,
-  exportDataAsCSV,
   exportDataAsJSON,
-  parseAndImportCSV,
   parseAndImportJSON,
+  fetchRemoteJSON,
   DEFAULT_TABS
 } from './services/storage';
 
@@ -21,7 +20,7 @@ import { AddStockModal } from './components/AddStockModal';
 import { StockDetailModal } from './components/StockDetailModal';
 import { ShareConfigModal } from './components/ShareConfigModal';
 import { fetchJpStockFullProfile } from './services/yahooFinance';
-import { Eye, Edit3, Check, Lock, ShieldCheck, Upload, RefreshCw } from 'lucide-react';
+import { Lock } from 'lucide-react';
 
 // 指定ミリ秒待機するスリープ関数
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -81,22 +80,17 @@ export const App: React.FC = () => {
       const content = event.target?.result as string;
       if (!content) return;
 
-      let res: { success: boolean; count: number; stocks: StockItem[] } = { success: false, count: 0, stocks: [] };
-
-      if (file.name.endsWith('.json')) {
-        res = parseAndImportJSON(content);
-      } else {
-        res = parseAndImportCSV(content);
-      }
+      const res = parseAndImportJSON(content);
 
       if (res.success && res.stocks.length > 0) {
         setStocks(res.stocks);
-        alert(`【読み込み成功】\nCSVファイルから銘柄データ [ ${res.count}件 ] をインポート復元しました。\nこれからバックグラウンドで時間を分散させて本物の株価と同期します。`);
-        
-        // インポート直後に時間を分散して安全にYahoo Financeとリアルタイム同期
+        if (res.tabs && res.tabs.length > 0) {
+          setTabs(res.tabs);
+        }
+        alert(`【読み込み成功】\nJSONファイルから銘柄データ [ ${res.count}件 ] をインポート復元しました。\nこれからバックグラウンドで時間を分散させて本物の株価と同期します。`);
         await updateAllStocksRealDataSequentially(res.stocks);
       } else {
-        alert('ファイルの読み込みに失敗しました。');
+        alert('JSONファイルの読み込みに失敗しました。正しいフォーマットのファイルかご確認ください。');
       }
 
       if (fileInputRef.current) {
@@ -143,11 +137,41 @@ export const App: React.FC = () => {
 
     async function load() {
       try {
-        const { stocks: loadedStocks, tabs: loadedTabs } = await initializeDefaultData();
+        const storedSettings = getSyncSettings();
+        setSettings(storedSettings);
+
+        const params = new URLSearchParams(window.location.search);
+        const dataUrlParam = params.get('dataUrl') || params.get('json') || storedSettings.apiEndpoint;
+
+        let loadedStocks: StockItem[] = [];
+        let loadedTabs: TabConfig[] = DEFAULT_TABS;
+
+        if (dataUrlParam) {
+          const remote = await fetchRemoteJSON(dataUrlParam);
+          if (remote.success && remote.stocks.length > 0) {
+            loadedStocks = remote.stocks;
+            loadedTabs = remote.tabs;
+          } else {
+            const def = await initializeDefaultData();
+            loadedStocks = def.stocks;
+            loadedTabs = def.tabs;
+          }
+        } else {
+          const def = await initializeDefaultData();
+          loadedStocks = def.stocks;
+          loadedTabs = def.tabs;
+        }
+
         let safeStocks = Array.isArray(loadedStocks) ? loadedStocks : [];
         const safeTabs = Array.isArray(loadedTabs) && loadedTabs.length > 0 ? loadedTabs : DEFAULT_TABS;
 
-        // 既存データの中にある明らかな異常値 (90円や0.63円など) を自動検知して0(非表示)に自動クレンジング
+        // 東証全4,000銘柄マスタによる自動日本語化・セクター補正・時価総額補正
+        const { updatedStocks: jpCleanedStocks, changedCount } = applyJapaneseNamesToAllStocks(safeStocks);
+        if (changedCount > 0) {
+          safeStocks = jpCleanedStocks;
+        }
+
+        // 既存データの中にある明らかな異常値を自動クレンジング
         safeStocks = safeStocks.map((s) => {
           const cleanPrice = (val: number) => (val === 90 || val < 1.0) ? 0 : val;
           return {
@@ -161,9 +185,9 @@ export const App: React.FC = () => {
         });
 
         setStocks(safeStocks);
+        saveStocks(safeStocks);
         setTabs(safeTabs);
 
-        // バックグラウンドで時間を分散（スリープ遅延）させてクローラー制限を回避しながら本物のデータを同期
         updateAllStocksRealDataSequentially(safeStocks);
       } catch (err) {
         console.error('Failed to initialize stock app data:', err);
@@ -204,6 +228,9 @@ export const App: React.FC = () => {
           setStocks((prevStocks) => {
             const updated = prevStocks.map((s) => {
               if (s.code === stock.code) {
+                const capToUse = (real.marketCap && real.marketCap > 0) ? real.marketCap : (s.marketCap || 0);
+                const scaleToUse: '大型' | '中型' | '小型' = capToUse >= 5000 ? '大型' : (capToUse > 0 && capToUse <= 1000) ? '小型' : '中型';
+
                 return {
                   ...s,
                   currentPrice: real.currentPrice,
@@ -216,7 +243,9 @@ export const App: React.FC = () => {
                   priceYearStart: real.priceYearStart,
                   changeYtdPct,
                   adoptPrice,
-                  changeAdoptPct
+                  changeAdoptPct,
+                  marketCap: capToUse > 0 ? capToUse : s.marketCap,
+                  scale: scaleToUse
                 };
               }
               return s;
@@ -305,7 +334,7 @@ export const App: React.FC = () => {
       <input
         type="file"
         ref={fileInputRef}
-        accept=".csv, .json"
+        accept=".json"
         onChange={handleFileImport}
         style={{ display: 'none' }}
       />
@@ -355,7 +384,6 @@ export const App: React.FC = () => {
         isReadOnly={isReadOnly}
         onOpenAddModal={() => setIsAddModalOpen(true)}
         onOpenShareModal={() => setIsShareModalOpen(true)}
-        onExportCSV={() => exportDataAsCSV(stocks || [])}
         onExportJSON={() => exportDataAsJSON(stocks || [], tabs || [])}
       />
 
@@ -423,9 +451,8 @@ export const App: React.FC = () => {
             setSettings(newSettings);
             saveSyncSettings(newSettings);
           }}
-          onExportCSV={() => exportDataAsCSV(stocks || [])}
           onExportJSON={() => exportDataAsJSON(stocks || [], tabs || [])}
-          onImportCSVClick={() => fileInputRef.current?.click()} // CSV読み込みトリガーの連結
+          onImportJSONClick={() => fileInputRef.current?.click()}
         />
       )}
     </div>

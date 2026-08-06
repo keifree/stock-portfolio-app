@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { SyncSettings, StockItem, TabConfig } from '../types';
-import { createBackup, restoreFromBackup, getBackupInfo } from '../services/storage';
-import { X, Save, RotateCcw, Download, Cloud, Globe, Copy, Check, Lock, Edit3, Upload } from 'lucide-react';
+import { parseAndImportHorizontalFinancialCSV, saveStocks } from '../services/storage';
+import { applyJapaneseNamesToAllStocks } from '../services/tseMaster';
+import { X, Save, Globe, Copy, Check, Lock, Database, Upload, FileSpreadsheet, Languages } from 'lucide-react';
 
 interface ShareConfigModalProps {
   settings: SyncSettings;
@@ -10,9 +11,8 @@ interface ShareConfigModalProps {
   isReadOnly?: boolean;
   onClose: () => void;
   onSaveSettings: (settings: SyncSettings) => void;
-  onExportCSV: () => void;
   onExportJSON: () => void;
-  onImportCSVClick: () => void; // CSVインポート発火コールバックを追加
+  onImportJSONClick: () => void;
 }
 
 export const ShareConfigModal: React.FC<ShareConfigModalProps> = ({
@@ -21,17 +21,14 @@ export const ShareConfigModal: React.FC<ShareConfigModalProps> = ({
   isReadOnly = false,
   onClose,
   onSaveSettings,
-  onExportCSV,
   onExportJSON,
-  onImportCSVClick
+  onImportJSONClick
 }) => {
-  const [autoSync, setAutoSync] = useState(settings?.autoSync || false);
-  const [endpoint, setEndpoint] = useState(settings?.apiEndpoint || '');
+  const [gistUrl, setGistUrl] = useState(settings?.apiEndpoint || '');
   const [copiedReadonly, setCopiedReadonly] = useState(false);
-  const [copiedEditor, setCopiedEditor] = useState(false);
+  const csvInputRef = useRef<HTMLInputElement>(null);
 
   const baseUrl = typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '';
-  const editorUrl = baseUrl;
 
   // 当月の期限限定キー(YYMMハッシュ)を自動生成
   const today = new Date();
@@ -39,9 +36,11 @@ export const ShareConfigModal: React.FC<ShareConfigModalProps> = ({
   const mm = String(today.getMonth() + 1).padStart(2, '0');
   const currentKey = btoa(`stock-${yyyy}-${mm}`).substring(0, 8); // 今月限定のキー
   
-  const readonlyUrl = `${baseUrl}?mode=readonly&key=${currentKey}`;
-
-  const backupInfo = getBackupInfo();
+  // Gist URLが入力されている場合は、閲覧者用自動読み込みURLに付与
+  const encodedGist = gistUrl ? encodeURIComponent(gistUrl) : '';
+  const readonlyUrl = gistUrl 
+    ? `${baseUrl}?mode=readonly&key=${currentKey}&dataUrl=${encodedGist}`
+    : `${baseUrl}?mode=readonly&key=${currentKey}`;
 
   const handleCopyReadonly = () => {
     if (navigator.clipboard) {
@@ -51,60 +50,63 @@ export const ShareConfigModal: React.FC<ShareConfigModalProps> = ({
     }
   };
 
-  const handleCopyEditor = () => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(editorUrl);
-      setCopiedEditor(true);
-      setTimeout(() => setCopiedEditor(false), 2500);
-    }
-  };
-
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
     onSaveSettings({
       ...settings,
-      autoSync: autoSync,
-      apiEndpoint: endpoint
+      apiEndpoint: gistUrl
     });
-    alert('設定を更新しました。');
+    alert('共有設定を保存しました。');
   };
 
-  const handleSaveBackup = () => {
-    if (isReadOnly) return;
-    const res = createBackup();
-    if (res.success) {
-      alert(`【データ保存完了】\n保存件数: ${res.count}件\n保存日時: ${res.time}\n\nバックアップ保存いたしました。`);
-      window.location.reload();
-    } else {
-      alert('保存に失敗しました。');
-    }
-  };
+  const handleHorizontalCsvImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-  const handleRestoreBackup = () => {
-    if (isReadOnly) return;
-    if (!backupInfo.exists) {
-      alert('保存されたバックアップデータがありません。');
-      return;
-    }
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
 
-    if (window.confirm(`【データ復元の確認】\n保存日時: ${backupInfo.time}\n保存件数: ${backupInfo.count}件\n\n復元しますか？`)) {
-      const res = restoreFromBackup();
-      if (res.success) {
-        alert(`【復元完了】\n${res.count}件の銘柄データを復元いたしました。`);
+      const res = parseAndImportHorizontalFinancialCSV(text);
+      if (res.success && res.importedNotesCount > 0) {
+        alert(`【取り込み完了】\n対象銘柄数: ${res.affectedStocksCount}件\n取り込み決算メモ数: ${res.importedNotesCount}件\n\n全銘柄への過去メモ一括振り分け・取り込みが完了しました！`);
         window.location.reload();
       } else {
-        alert('復元に失敗しました。');
+        alert('過去メモCSVの取り込みに失敗したか、対象の銘柄コードがアプリ内に登録されていません。');
       }
+      if (csvInputRef.current) csvInputRef.current.value = '';
+    };
+    reader.readAsText(file, 'UTF-8');
+  };
+
+  const handleBatchJapaneseConvert = () => {
+    if (isReadOnly) return;
+    const { updatedStocks, changedCount } = applyJapaneseNamesToAllStocks(stocks);
+    if (changedCount > 0) {
+      saveStocks(updatedStocks);
+      alert(`【一括日本語化の完了】\n東証公式マスタ（約4,000銘柄）を照合し、英語表記や未設定だった [ ${changedCount} 件 ] の銘柄を東証正式日本語名＆セクターに変換・統合しました！`);
+      window.location.reload();
+    } else {
+      alert('すべての銘柄がすでに東証正式日本語名に統一されています。');
     }
   };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
+      <input
+        type="file"
+        ref={csvInputRef}
+        accept=".csv, .txt"
+        onChange={handleHorizontalCsvImport}
+        style={{ display: 'none' }}
+      />
+
       <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '720px' }}>
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <Globe size={22} style={{ color: 'var(--accent-cyan)' }} />
-            <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>権限付き共有 ＆ バックアップ設定</h2>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>JSONデータ連携 ＆ 閲覧共有設定</h2>
           </div>
           <button className="modal-close-btn" onClick={onClose}>
             <X size={20} />
@@ -112,20 +114,42 @@ export const ShareConfigModal: React.FC<ShareConfigModalProps> = ({
         </div>
 
         <div className="modal-body">
-          {/* 1. 権限選択付き共有URL発行 */}
+          {/* 1. Gist連動 閲覧共有URL発行 */}
           <div className="glass-card" style={{ padding: '18px', marginBottom: '16px', background: 'rgba(15, 23, 42, 0.9)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
               <Globe size={18} style={{ color: 'var(--accent-cyan)' }} />
-              <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>1. アクセス権限別 共有URL発行 (1ヶ月限定リンク対応)</h3>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>1. Secret Gist連動 閲覧URL発行 (1ヶ月限定リンク)</h3>
             </div>
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
-              用途に合わせて「閲覧専用リンク」または「編集許可リンク」をコピーして共有配布できます。
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '14px', lineHeight: 1.5 }}>
+              管理者が GitHub Gist (Secret Gist) に保存した **JSON Raw URL** を以下に設定しておくと、閲覧者がアクセスした際に最新ポートフォリオを自動読み込みできます。
               <br />
-              <strong style={{ color: 'var(--stock-up)' }}>※ 閲覧専用URLはセキュリティ保護のため、今月（{yyyy}年{mm}月）末に自動的に無効化（アクセス不可）になります。月が変わるごとに管理者が新しくコピーして配布してください。</strong>
+              <strong style={{ color: 'var(--stock-up)' }}>※ 閲覧用リンクは今月（{yyyy}年{mm}月）末に自動でアクセス不可となります。月が変わるごとに新しいリンクを配布してください。</strong>
             </p>
 
-            {/* A: 閲覧専用URL */}
-            <div style={{ marginBottom: '12px', padding: '10px 14px', background: 'rgba(234, 179, 8, 0.08)', borderRadius: '8px', border: '1px solid rgba(234, 179, 8, 0.2)' }}>
+            {/* Gist Raw URL設定フォーム */}
+            {!isReadOnly && (
+              <form onSubmit={handleSaveSettings} style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: 'var(--accent-cyan)' }}>
+                  共有用 Secret Gist (Raw JSON URL):
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="url"
+                    className="input-field"
+                    placeholder="https://gist.githubusercontent.com/username/.../raw/data.json"
+                    value={gistUrl}
+                    onChange={(e) => setGistUrl(e.target.value)}
+                    style={{ flex: 1, fontSize: '0.8rem' }}
+                  />
+                  <button type="submit" className="btn btn-primary" style={{ padding: '6px 14px', fontSize: '0.82rem' }}>
+                    <Save size={14} /> URL保存
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* 閲覧専用URL発行 */}
+            <div style={{ padding: '12px 14px', background: 'rgba(234, 179, 8, 0.08)', borderRadius: '8px', border: '1px solid rgba(234, 179, 8, 0.2)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 700, color: '#facc15', marginBottom: '6px' }}>
                 <Lock size={14} /> 閲覧専用URL ({yyyy}年{mm}月限定リンク)
               </div>
@@ -143,96 +167,61 @@ export const ShareConfigModal: React.FC<ShareConfigModalProps> = ({
                 </button>
               </div>
             </div>
+          </div>
 
-            {/* B: 編集許可URL */}
-            <div style={{ padding: '10px 14px', background: 'rgba(56, 189, 248, 0.08)', borderRadius: '8px', border: '1px solid rgba(56, 189, 248, 0.2)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 700, color: 'var(--accent-cyan)', marginBottom: '6px' }}>
-                <Edit3 size={14} /> 編集許可URL (管理者・共同編集用)
-              </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                <input
-                  type="text"
-                  readOnly
-                  className="input-field"
-                  value={editorUrl}
-                  style={{ flex: 1, fontSize: '0.8rem' }}
-                />
-                <button className="btn btn-primary" onClick={handleCopyEditor}>
-                  {copiedEditor ? <Check size={14} /> : <Copy size={14} />}
-                  <span>{copiedEditor ? 'コピー完了' : '編集URLコピー'}</span>
-                </button>
-              </div>
+          {/* 2. JSONファイルによる直接保存 ＆ 復元 */}
+          <div className="glass-card" style={{ padding: '18px', marginBottom: '16px', background: 'rgba(15, 23, 42, 0.9)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <Database size={18} style={{ color: 'var(--accent-cyan)' }} />
+              <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>2. JSONファイル保存・直接復元 ＆ 東証全銘柄日本語化</h3>
+            </div>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
+              銘柄・決算メモ・IRログ・タブ設定など、すべてのデータを1つのJSONファイルとして出力・復元します。
+            </p>
+
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              {!isReadOnly && (
+                <>
+                  <button className="btn btn-primary" onClick={onExportJSON} style={{ background: 'var(--accent-cyan)', borderColor: 'var(--accent-cyan)', color: '#000', fontWeight: 800 }}>
+                    <Database size={15} />
+                    <span>📦 JSONバックアップ保存</span>
+                  </button>
+                  <button className="btn btn-primary" onClick={handleBatchJapaneseConvert} style={{ background: '#3b82f6', borderColor: '#3b82f6' }}>
+                    <Languages size={15} />
+                    <span>🇯🇵 全銘柄を東証正式日本語名に一括変換</span>
+                  </button>
+                </>
+              )}
+              
+              <button className="btn btn-primary" onClick={() => { onClose(); onImportJSONClick(); }} style={{ background: '#8b5cf6', borderColor: '#8b5cf6' }}>
+                <Upload size={15} />
+                <span>📥 JSONファイルからインポート復元</span>
+              </button>
             </div>
           </div>
 
-          {/* 2. データ保存 ＆ 復元 ＆ CSV読み込みインポート */}
+          {/* 3. 旧スプレッドシート 過去決算メモの一括振り分けインポート */}
           {!isReadOnly && (
-            <div className="glass-card" style={{ padding: '18px', marginBottom: '16px', background: 'rgba(15, 23, 42, 0.9)' }}>
+            <div className="glass-card" style={{ padding: '18px', background: 'rgba(15, 23, 42, 0.9)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                <Save size={18} style={{ color: 'var(--accent-cyan)' }} />
-                <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>2. データ保存・復元 ＆ CSVインポート</h3>
+                <FileSpreadsheet size={18} style={{ color: '#10b981' }} />
+                <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>3. 旧スプレッドシート過去メモ一括自動振り分け</h3>
               </div>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '12px' }}>
-                ローカルバックアップ状態: <span style={{ color: backupInfo.exists ? 'var(--stock-up)' : 'var(--text-muted)', fontWeight: 700 }}>
-                  {backupInfo.exists ? `${backupInfo.time} (${backupInfo.count}件保存済み)` : '未保存'}
-                </span>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '14px', lineHeight: 1.5 }}>
+                複数銘柄が1ファイルに入った過去メモCSV（<code>銘柄コード, 日付1, コメント1, 日付2, コメント2...</code>）を選択すると、該当する全銘柄に自動で決算メモを一発割り振りします。
               </p>
 
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                <button className="btn btn-primary" onClick={handleSaveBackup} style={{ background: '#10b981', borderColor: '#10b981' }}>
-                  <Save size={15} />
-                  <span>ブラウザにバックアップ</span>
-                </button>
-                <button className="btn btn-primary" onClick={handleRestoreBackup} disabled={!backupInfo.exists} style={{ background: '#3b82f6', borderColor: '#3b82f6', opacity: backupInfo.exists ? 1 : 0.5 }}>
-                  <RotateCcw size={15} />
-                  <span>バックアップから復元</span>
-                </button>
-                
-                {/* 移設されたCSVインポートボタン */}
-                <button className="btn btn-primary" onClick={() => { onClose(); onImportCSVClick(); }} style={{ background: '#8b5cf6', borderColor: '#8b5cf6' }}>
-                  <Upload size={15} />
-                  <span>📥 CSVファイルからインポート復元</span>
-                </button>
-
-                <button className="btn btn-secondary" onClick={onExportCSV}>
-                  <Download size={15} />
-                  <span>CSVエクスポート保存</span>
-                </button>
-              </div>
+              <button className="btn btn-primary" onClick={() => csvInputRef.current?.click()} style={{ background: '#10b981', borderColor: '#10b981' }}>
+                <FileSpreadsheet size={15} />
+                <span>📥 旧スプレッドシート過去メモCSVを一括インポート</span>
+              </button>
             </div>
           )}
 
-          {/* 3. 同期設定 */}
-          <div className="glass-card" style={{ padding: '18px', background: 'rgba(15, 23, 42, 0.9)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-              <Cloud size={18} style={{ color: 'var(--accent-cyan)' }} />
-              <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>3. 自動同期設定</h3>
-            </div>
-
-            <form onSubmit={handleSaveSettings}>
-              <div style={{ marginBottom: '12px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={autoSync}
-                    onChange={(e) => setAutoSync(e.target.checked)}
-                    disabled={isReadOnly}
-                  />
-                  <span>株価データの自動バックグラウンド更新を有効にする</span>
-                </label>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-                <button type="button" className="btn btn-secondary" onClick={onClose}>
-                  閉じる
-                </button>
-                {!isReadOnly && (
-                  <button type="submit" className="btn btn-primary">
-                    設定を保存
-                  </button>
-                )}
-              </div>
-            </form>
+          <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
+            <button className="btn btn-secondary" onClick={onClose}>
+              閉じる
+            </button>
           </div>
         </div>
       </div>

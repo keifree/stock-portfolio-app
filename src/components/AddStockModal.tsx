@@ -51,15 +51,7 @@ function calculateMarketCap(code: string, currentPrice: number, masterCap?: numb
     return Math.round((currentPrice * sharesInOku));
   }
 
-  // 汎用マルチプライヤーフォールバック
-  let multiplier = 0.8;
-  if (currentPrice >= 10000) multiplier = 1.5;
-  else if (currentPrice >= 4000) multiplier = 1.0;
-  else if (currentPrice >= 2000) multiplier = 0.7;
-  else if (currentPrice >= 1000) multiplier = 0.5;
-  else multiplier = 0.3;
-
-  return Math.round(currentPrice * multiplier);
+  return 0;
 }
 
 function getValidatedTseName(code: string, rawName?: string) {

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { StockItem } from '../types';
-import { getAutoTseJapaneseInfo, calculateDynamicMarketCap, getHistoricalPriceOnDate } from '../services/tseMaster';
+import { StockItem, TabConfig } from '../types';
+import { getAutoTseJapaneseInfo, calculateDynamicMarketCap } from '../services/tseMaster';
 import { formatMarketCap, saveStocks } from '../services/storage';
 import { fetchJpStockDatePrice } from '../services/yahooFinance';
 import {
@@ -171,16 +171,14 @@ export const StockTable: React.FC<StockTableProps> = ({
       return;
     }
 
-    let newAdoptPrice = stock.currentPrice;
+    let newAdoptPrice = stock.adoptPrice || stock.currentPrice;
     try {
       const price = await fetchJpStockDatePrice(stock.code, parsedDate);
-      if (price !== null) {
+      if (price !== null && price > 0) {
         newAdoptPrice = price;
-      } else {
-        newAdoptPrice = getHistoricalPriceOnDate(stock.code, stock.currentPrice, parsedDate);
       }
     } catch (e) {
-      newAdoptPrice = getHistoricalPriceOnDate(stock.code, stock.currentPrice, parsedDate);
+      // ignore
     }
 
     const changeAdoptPct = newAdoptPrice > 0 ? Number((((stock.currentPrice - newAdoptPrice) / newAdoptPrice) * 100).toFixed(2)) : 0;

@@ -7,7 +7,6 @@ interface HeaderProps {
   isReadOnly?: boolean;
   onOpenAddModal: () => void;
   onOpenShareModal: () => void;
-  onExportCSV: () => void;
   onExportJSON: () => void;
 }
 
@@ -16,7 +15,6 @@ export const Header: React.FC<HeaderProps> = ({
   isReadOnly = false,
   onOpenAddModal,
   onOpenShareModal,
-  onExportCSV,
   onExportJSON
 }) => {
   const totalCount = (stocks || []).length;
@@ -73,20 +71,14 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
             )}
 
-            {/* CSV出力ボタン */}
-            <button className="btn btn-secondary" onClick={onExportCSV} style={{ padding: '6px 12px', fontSize: '0.82rem' }} title="CSVファイル保存">
-              <Download size={15} />
-              <span>CSV</span>
-            </button>
-
             {/* JSON出力ボタン */}
-            <button className="btn btn-secondary" onClick={onExportJSON} style={{ padding: '6px 12px', fontSize: '0.82rem' }} title="バックアップ用JSON保存">
-              <Database size={15} />
-              <span>JSON</span>
+            <button className="btn btn-secondary" onClick={onExportJSON} style={{ padding: '6px 14px', fontSize: '0.82rem', borderColor: 'var(--accent-cyan)' }} title="バックアップ用JSON保存">
+              <Database size={15} style={{ color: 'var(--accent-cyan)' }} />
+              <span>📦 JSON保存</span>
             </button>
 
             {/* 共有設定ボタン */}
-            <button className="btn btn-secondary" onClick={onOpenShareModal} style={{ padding: '6px 12px', fontSize: '0.82rem' }} title="共有・バックアップ">
+            <button className="btn btn-secondary" onClick={onOpenShareModal} style={{ padding: '6px 14px', fontSize: '0.82rem' }} title="共有・自動同期設定">
               <Share2 size={15} />
               <span>共有設定</span>
             </button>

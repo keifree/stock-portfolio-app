@@ -4,7 +4,7 @@ export interface FinancialQuarterNote {
   id: string;
   date?: string; // 日付 (YYYY-MM-DD)
   title?: string; // タイトル
-  evaluation?: 'ポジ' | 'ニュートラル' | 'ネガ'; // 決算・IR評価
+  evaluation?: '未選択' | 'ポジ' | 'ニュートラル' | 'ネガ'; // 決算・IR評価
   comment?: string; // 分析コメント (大きな枠)
   pinned?: boolean; // 最上部ピン留めフラグ
   
