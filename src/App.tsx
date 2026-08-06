@@ -20,7 +20,7 @@ import { StockTable } from './components/StockTable';
 import { AddStockModal } from './components/AddStockModal';
 import { StockDetailModal } from './components/StockDetailModal';
 import { ShareConfigModal } from './components/ShareConfigModal';
-import { Eye, Edit3, Check, Lock, ShieldCheck, Upload } from 'lucide-react';
+import { Eye, Edit3, Check, Lock, ShieldCheck, Upload, Calendar } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [stocks, setStocks] = useState<StockItem[]>([]);
@@ -50,6 +50,31 @@ export const App: React.FC = () => {
       setCopiedType(type);
       setTimeout(() => setCopiedType(null), 2500);
     }
+  };
+
+  // 全銘柄の採用日一括変更補正機能
+  const handleBulkUpdateAdoptDate = () => {
+    const inputDate = window.prompt('全銘柄に適用する「採用日」をYYYY-MM-DD形式で入力してください', '2024-08-01');
+    if (!inputDate) return;
+
+    const updated = stocks.map((s) => {
+      let newPrice = s.adoptPrice;
+      if (s.chartHistory && s.chartHistory.length > 0) {
+        const pt = s.chartHistory.find((p) => p.date === inputDate) || s.chartHistory.slice().reverse().find((p) => p.date <= inputDate);
+        if (pt) newPrice = pt.price;
+      }
+      const changeAdoptPct = newPrice > 0 ? Number((((s.currentPrice - newPrice) / newPrice) * 100).toFixed(2)) : 0;
+      return {
+        ...s,
+        adoptDate: inputDate,
+        adoptPrice: newPrice,
+        changeAdoptPct
+      };
+    });
+
+    setStocks(updated);
+    saveStocks(updated);
+    alert(`【採用日の一括補正完了】\n全 ${updated.length} 件の採用日を [ ${inputDate} ] に補正更新いたしました！`);
   };
 
   // 保存済みCSV/JSONファイルの一括インポート取り込み
@@ -204,16 +229,15 @@ export const App: React.FC = () => {
         onExportJSON={() => exportDataAsJSON(stocks || [], tabs || [])}
       />
 
-      {/* 画面中央最優先設置：権限共有 ＆ CSV/JSONファイル復元インポートパネル */}
+      {/* 画面中央最優先設置：権限共有 ＆ CSV復元＆採用日補正コントロールパネル */}
       <div className="glass-card" style={{ padding: '12px 18px', marginBottom: '14px', background: 'rgba(15, 23, 42, 0.85)', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <ShieldCheck size={18} style={{ color: 'var(--accent-cyan)' }} />
-            <span style={{ fontSize: '0.88rem', fontWeight: 800, color: '#fff' }}>共有 ＆ CSVファイル復元パネル:</span>
+            <span style={{ fontSize: '0.88rem', fontWeight: 800, color: '#fff' }}>共有 ＆ CSV復元・採用日補正パネル:</span>
           </div>
 
           <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
-            {/* 非表示のファイルインプット */}
             <input
               type="file"
               ref={fileInputRef}
@@ -222,7 +246,7 @@ export const App: React.FC = () => {
               style={{ display: 'none' }}
             />
 
-            {/* 📥 保存したCSV/JSONファイルを読み込むボタン */}
+            {/* 📥 CSVファイルの読み込みボタン */}
             <button
               className="btn btn-primary"
               onClick={() => fileInputRef.current?.click()}
@@ -230,8 +254,21 @@ export const App: React.FC = () => {
               title="保存したCSVまたはJSONファイルを選択して登録データを一括復元します"
             >
               <Upload size={16} />
-              <span>📥 保存したCSVファイルを読み込んで復元</span>
+              <span>📥 CSVファイルを読み込んで復元</span>
             </button>
+
+            {/* 📅 全銘柄の採用日一括変更ボタン */}
+            {!isReadOnly && (
+              <button
+                className="btn btn-secondary"
+                onClick={handleBulkUpdateAdoptDate}
+                style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8', borderColor: 'rgba(99, 102, 241, 0.3)', fontSize: '0.78rem' }}
+                title="全銘柄の採用日を指定の過去日付に一括で補正変更します"
+              >
+                <Calendar size={14} />
+                <span>📅 採用日を一括変更</span>
+              </button>
+            )}
 
             {/* 1. 閲覧専用URLコピーボタン */}
             <button

@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { StockItem } from '../types';
 import { getAutoTseJapaneseInfo } from '../services/tseMaster';
-import { formatMarketCap } from '../services/storage';
+import { formatMarketCap, saveStocks } from '../services/storage';
 import {
   ArrowUpDown,
   Trash2,
-  FileText
+  FileText,
+  Calendar
 } from 'lucide-react';
 
 interface StockTableProps {
@@ -35,6 +36,8 @@ export const StockTable: React.FC<StockTableProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [sortField, setSortField] = useState<SortField>('changePrevPct');
   const [sortAsc, setSortAsc] = useState<boolean>(false);
+  const [editingAdoptId, setEditingAdoptId] = useState<string | null>(null);
+  const [editingAdoptDate, setEditingAdoptDate] = useState<string>('');
 
   // フィルタリング
   const filteredStocks = stocks.filter((stock) => {
@@ -97,6 +100,32 @@ export const StockTable: React.FC<StockTableProps> = ({
       return `${parts[1]}/${parts[2]}`;
     }
     return dateStr;
+  };
+
+  // 採用日のその場ワンクリック変更機能
+  const handleSaveAdoptDate = (stock: StockItem, newDate: string) => {
+    if (!newDate) return;
+    const updatedStocks = stocks.map((s) => {
+      if (s.id === stock.id) {
+        // 株価履歴があればその日の価格を補正採用価格とする
+        let newAdoptPrice = s.adoptPrice;
+        if (s.chartHistory && s.chartHistory.length > 0) {
+          const pt = s.chartHistory.find((p) => p.date === newDate) || s.chartHistory.slice().reverse().find((p) => p.date <= newDate);
+          if (pt) newAdoptPrice = pt.price;
+        }
+        const changeAdoptPct = newAdoptPrice > 0 ? Number((((s.currentPrice - newAdoptPrice) / newAdoptPrice) * 100).toFixed(2)) : 0;
+        return {
+          ...s,
+          adoptDate: newDate,
+          adoptPrice: newAdoptPrice,
+          changeAdoptPct
+        };
+      }
+      return s;
+    });
+    saveStocks(updatedStocks);
+    setEditingAdoptId(null);
+    window.location.reload();
   };
 
   return (
@@ -162,7 +191,7 @@ export const StockTable: React.FC<StockTableProps> = ({
               </th>
               <th onClick={() => handleSort('changeAdoptPct')} style={{ cursor: 'pointer' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
-                  採用比
+                  採用比 (日付変更可)
                   <ArrowUpDown size={12} />
                 </div>
               </th>
@@ -190,7 +219,6 @@ export const StockTable: React.FC<StockTableProps> = ({
                 const displaySector = autoTse.sector || stock.sector;
 
                 return (
-                  // 行全体をクリック可能（詳細分析モーダルが開く）
                   <tr
                     key={stock.id}
                     className="table-row-hover"
@@ -198,7 +226,7 @@ export const StockTable: React.FC<StockTableProps> = ({
                     style={{ cursor: 'pointer' }}
                     title="クリックして詳細・決算IR分析を開く"
                   >
-                    {/* 1 & 2. コード・銘柄名・セクター（長社名は省略 ellipsis 表示） */}
+                    {/* 1 & 2. コード・銘柄名・セクター */}
                     <td style={{ maxWidth: '145px' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', overflow: 'hidden' }}>
@@ -269,13 +297,32 @@ export const StockTable: React.FC<StockTableProps> = ({
                       </div>
                     </td>
 
-                    {/* 12, 13 & 14. 採用比 */}
-                    <td>
+                    {/* 12, 13 & 14. 採用比 （日付クリックでその場カレンダー変更対応） */}
+                    <td onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
                         {renderChangeText(stock.changeAdoptPct)}
-                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                          {formatShortDate(stock.adoptDate)} ¥{stock.adoptPrice.toLocaleString()}
-                        </span>
+                        {editingAdoptId === stock.id ? (
+                          <input
+                            type="date"
+                            value={editingAdoptDate}
+                            onChange={(e) => setEditingAdoptDate(e.target.value)}
+                            onBlur={() => handleSaveAdoptDate(stock, editingAdoptDate)}
+                            autoFocus
+                            style={{ fontSize: '0.68rem', padding: '1px 2px', background: '#0f172a', color: '#fff', border: '1px solid var(--accent-cyan)' }}
+                          />
+                        ) : (
+                          <span
+                            onClick={() => {
+                              if (isReadOnly) return;
+                              setEditingAdoptId(stock.id);
+                              setEditingAdoptDate(stock.adoptDate || new Date().toISOString().split('T')[0]);
+                            }}
+                            style={{ fontSize: '0.68rem', color: 'var(--text-muted)', cursor: isReadOnly ? 'default' : 'pointer', textDecoration: isReadOnly ? 'none' : 'underline' }}
+                            title="クリックして採用日を変更補正"
+                          >
+                            {formatShortDate(stock.adoptDate)} ¥{stock.adoptPrice.toLocaleString()} <Calendar size={10} style={{ display: 'inline' }} />
+                          </span>
+                        )}
                       </div>
                     </td>
 
@@ -300,7 +347,7 @@ export const StockTable: React.FC<StockTableProps> = ({
                       </span>
                     </td>
 
-                    {/* 操作列: 削除のみ(閲覧専用時はロック、削除時は安全確認画面あり) */}
+                    {/* 操作列: 削除のみ */}
                     <td style={{ textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
                       {isReadOnly ? (
                         <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>-</span>
