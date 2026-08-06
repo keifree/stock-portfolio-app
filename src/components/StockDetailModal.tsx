@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { StockItem, FinancialQuarterNote, IRComment } from '../types';
+import { StockItem, FinancialQuarterNote, IRComment, FeatureNote } from '../types';
 import { getAutoTseJapaneseInfo } from '../services/tseMaster';
 import { FinancialNotes } from './FinancialNotes';
-import { IRComments } from './IRComments';
-import { X, FileText, MessageSquare, Info } from 'lucide-react';
+import { FeatureNotes } from './FeatureNotes';
+import { X, FileText, MessageSquare, BookOpen, Lock } from 'lucide-react';
 
 interface StockDetailModalProps {
   stock: StockItem;
@@ -18,7 +18,7 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
   onClose,
   onUpdateStock
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'financial' | 'ir' | 'info'>('financial');
+  const [activeSubTab, setActiveSubTab] = useState<'financial' | 'logs' | 'features'>('financial');
 
   const handleUpdateFinancialNotes = (notes: FinancialQuarterNote[]) => {
     if (isReadOnly) return;
@@ -30,11 +30,11 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
     onUpdateStock(updated);
   };
 
-  const handleUpdateIRComments = (comments: IRComment[]) => {
+  const handleUpdateFeatureNotes = (notes: FeatureNote[]) => {
     if (isReadOnly) return;
     const updated = {
       ...stock,
-      irComments: comments,
+      featureNotes: notes,
       updatedAt: new Date().toISOString()
     };
     onUpdateStock(updated);
@@ -152,57 +152,74 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
           {renderChart()}
 
           {/* サブナビゲーション */}
-          <div style={{ display: 'flex', gap: '10px', borderBottom: '1px solid var(--border-color)', marginTop: '24px', marginBottom: '20px' }}>
+          <div style={{ display: 'flex', gap: '10px', borderBottom: '1px solid var(--border-color)', marginTop: '24px', marginBottom: '20px', flexWrap: 'wrap' }}>
             <button
               className={`btn ${activeSubTab === 'financial' ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setActiveSubTab('financial')}
             >
               <FileText size={15} />
-              <span>各期決算メモ ({stock.financialNotes.length})</span>
+              <span>決算・IRコメント ({stock.financialNotes?.length || 0})</span>
             </button>
             <button
-              className={`btn ${activeSubTab === 'ir' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setActiveSubTab('ir')}
+              className={`btn ${activeSubTab === 'logs' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setActiveSubTab('logs')}
             >
               <MessageSquare size={15} />
-              <span>IRコメント・分析 ({stock.irComments.length})</span>
+              <span>各種ログ一覧 ({stock.irComments?.length || 0})</span>
             </button>
             <button
-              className={`btn ${activeSubTab === 'info' ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setActiveSubTab('info')}
+              className={`btn ${activeSubTab === 'features' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setActiveSubTab('features')}
             >
-              <Info size={15} />
-              <span>全指標一覧</span>
+              <BookOpen size={15} />
+              <span>銘柄特徴・分析 ({(stock.featureNotes || []).length})</span>
             </button>
           </div>
 
           {/* サブコンテンツ表示 */}
           {activeSubTab === 'financial' && (
-            <FinancialNotes notes={stock.financialNotes} onUpdateNotes={handleUpdateFinancialNotes} />
+            <FinancialNotes 
+              notes={stock.financialNotes || []} 
+              onUpdateNotes={handleUpdateFinancialNotes} 
+              isReadOnly={isReadOnly}
+            />
           )}
 
-          {activeSubTab === 'ir' && (
-            <IRComments comments={stock.irComments} onUpdateComments={handleUpdateIRComments} />
-          )}
-
-          {activeSubTab === 'info' && (
-            <div className="glass-card" style={{ padding: '24px' }}>
-              <h4 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '16px' }}>全データ・基準価格詳細</h4>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', fontSize: '0.88rem' }}>
-                <div><strong>銘柄コード:</strong> {stock.code}</div>
-                <div><strong>銘柄名:</strong> {autoTse.name}</div>
-                <div><strong>現在価格:</strong> ¥{stock.currentPrice.toLocaleString()}</div>
-                <div><strong>前日価格:</strong> ¥{stock.previousPrice.toLocaleString()} ({stock.changePrevPct}%)</div>
-                <div><strong>5日前価格:</strong> ¥{stock.price5DaysAgo.toLocaleString()} ({stock.change5dPct}%)</div>
-                <div><strong>20日前価格:</strong> ¥{stock.price20DaysAgo.toLocaleString()} ({stock.change20dPct}%)</div>
-                <div><strong>年始価格:</strong> ¥{stock.priceYearStart.toLocaleString()} ({stock.changeYtdPct}%)</div>
-                <div><strong>銘柄採用日:</strong> {stock.adoptDate}</div>
-                <div><strong>採用時価格:</strong> ¥{stock.adoptPrice.toLocaleString()} ({stock.changeAdoptPct}%)</div>
-                <div><strong>セクター:</strong> {autoTse.sector}</div>
-                <div><strong>時価総額:</strong> {stock.marketCap.toLocaleString()}億円</div>
-                <div><strong>株価規模感:</strong> <span className={`scale-badge ${stock.scale}`}>{stock.scale}</span></div>
+          {activeSubTab === 'logs' && (
+            <div className="glass-card" style={{ padding: '20px', background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+              <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '16px', color: 'var(--accent-cyan)' }}>各種ログ一覧 ({stock.irComments?.length || 0}件)</h3>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {(stock.irComments || []).length === 0 ? (
+                  <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    現在記録されている移動・採用履歴ログはありません。
+                  </div>
+                ) : (
+                  [...(stock.irComments || [])]
+                    .sort((a, b) => b.date.localeCompare(a.date)) // 日付の新しい順
+                    .map((log) => (
+                      <div key={log.id} style={{ padding: '12px', borderBottom: '1px solid rgba(255, 255, 255, 0.05)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <div style={{ display: 'flex', gap: '8px', fontSize: '0.75rem', color: 'var(--text-muted)', alignItems: 'center' }}>
+                          <span style={{ color: '#fff', fontWeight: 700 }}>{log.date}</span>
+                          <span style={{ background: 'rgba(56, 189, 248, 0.15)', color: 'var(--accent-cyan)', padding: '1px 5px', borderRadius: '3px', fontWeight: 700 }}>{log.title}</span>
+                          <span>記録者: {log.author || 'システム'}</span>
+                        </div>
+                        <p style={{ fontSize: '0.85rem', color: '#e2e8f0', margin: 0, whiteSpace: 'pre-wrap' }}>
+                          {log.content}
+                        </p>
+                      </div>
+                    ))
+                )}
               </div>
             </div>
+          )}
+
+          {activeSubTab === 'features' && (
+            <FeatureNotes 
+              notes={stock.featureNotes || []} 
+              onUpdateNotes={handleUpdateFeatureNotes} 
+              isReadOnly={isReadOnly}
+            />
           )}
         </div>
       </div>

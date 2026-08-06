@@ -20,7 +20,11 @@ import { StockTable } from './components/StockTable';
 import { AddStockModal } from './components/AddStockModal';
 import { StockDetailModal } from './components/StockDetailModal';
 import { ShareConfigModal } from './components/ShareConfigModal';
-import { Eye, Edit3, Check, Lock, ShieldCheck, Upload, Calendar } from 'lucide-react';
+import { fetchJpStockFullProfile } from './services/yahooFinance';
+import { Eye, Edit3, Check, Lock, ShieldCheck, Upload, RefreshCw } from 'lucide-react';
+
+// 指定ミリ秒待機するスリープ関数
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const App: React.FC = () => {
   const [stocks, setStocks] = useState<StockItem[]>([]);
@@ -29,11 +33,10 @@ export const App: React.FC = () => {
   const [settings, setSettings] = useState<SyncSettings>({ autoSync: false, syncIntervalMinutes: 5, apiEndpoint: '' });
   const [loading, setLoading] = useState<boolean>(true);
 
-  // 閲覧権限モード判定 (?mode=readonly または ?role=viewer または ?readonly)
   const [isReadOnly, setIsReadOnly] = useState<boolean>(false);
+  const [isLinkExpired, setIsLinkExpired] = useState<boolean>(false); // 共有リンクの有効期限切れ状態
   const [copiedType, setCopiedType] = useState<string | null>(null);
 
-  // モーダル表示状態
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
   const [selectedStock, setSelectedStock] = useState<StockItem | null>(null);
@@ -41,8 +44,14 @@ export const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const baseUrl = typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '';
-  const readonlyUrl = `${baseUrl}?mode=readonly`;
   const editorUrl = baseUrl;
+
+  // 当月のキーを動的生成 (共有URL用)
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const currentKey = btoa(`stock-${yyyy}-${mm}`).substring(0, 8);
+  const readonlyUrl = `${baseUrl}?mode=readonly&key=${currentKey}`;
 
   const copyUrl = (url: string, type: 'readonly' | 'editor') => {
     if (navigator.clipboard) {
@@ -52,38 +61,23 @@ export const App: React.FC = () => {
     }
   };
 
-  // 全銘柄の採用日一括変更補正機能
-  const handleBulkUpdateAdoptDate = () => {
-    const inputDate = window.prompt('全銘柄に適用する「採用日」をYYYY-MM-DD形式で入力してください', '2024-08-01');
-    if (!inputDate) return;
-
-    const updated = stocks.map((s) => {
-      let newPrice = s.adoptPrice;
-      if (s.chartHistory && s.chartHistory.length > 0) {
-        const pt = s.chartHistory.find((p) => p.date === inputDate) || s.chartHistory.slice().reverse().find((p) => p.date <= inputDate);
-        if (pt) newPrice = pt.price;
-      }
-      const changeAdoptPct = newPrice > 0 ? Number((((s.currentPrice - newPrice) / newPrice) * 100).toFixed(2)) : 0;
-      return {
-        ...s,
-        adoptDate: inputDate,
-        adoptPrice: newPrice,
-        changeAdoptPct
-      };
-    });
-
-    setStocks(updated);
-    saveStocks(updated);
-    alert(`【採用日の一括補正完了】\n全 ${updated.length} 件の採用日を [ ${inputDate} ] に補正更新いたしました！`);
+  const handleResetData = () => {
+    try {
+      localStorage.removeItem('stock_portfolio_tabs_v2');
+      localStorage.removeItem('stock_portfolio_settings_v2');
+      localStorage.removeItem('stock_portfolio_backup_snapshot');
+      window.location.href = window.location.origin + window.location.pathname;
+    } catch (e) {
+      // ignore
+    }
   };
 
-  // 保存済みCSV/JSONファイルの一括インポート取り込み
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const content = event.target?.result as string;
       if (!content) return;
 
@@ -97,9 +91,12 @@ export const App: React.FC = () => {
 
       if (res.success && res.stocks.length > 0) {
         setStocks(res.stocks);
-        alert(`【読み込み成功】\nCSV/JSONファイルから本物の銘柄データ [ ${res.count}件 ] を無事復元インポートいたしました！`);
+        alert(`【読み込み成功】\nCSVファイルから銘柄データ [ ${res.count}件 ] をインポート復元しました。\nこれからバックグラウンドで時間を分散させて本物の株価と同期します。`);
+        
+        // インポート直後に時間を分散して安全にYahoo Financeとリアルタイム同期
+        await updateAllStocksRealDataSequentially(res.stocks);
       } else {
-        alert('ファイルの読み込みに失敗しました。フォーマットを確認してください。');
+        alert('ファイルの読み込みに失敗しました。');
       }
 
       if (fileInputRef.current) {
@@ -110,33 +107,64 @@ export const App: React.FC = () => {
   };
 
   useEffect(() => {
-    // URLクエリパラメータから権限モード判定
     if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search);
-      const mode = params.get('mode');
-      const role = params.get('role');
-      if (mode === 'readonly' || role === 'viewer' || mode === 'view' || params.has('readonly')) {
-        setIsReadOnly(true);
+      try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.has('reset') || params.has('clear')) {
+          localStorage.removeItem('stock_portfolio_tabs_v2');
+          localStorage.removeItem('stock_portfolio_settings_v2');
+          localStorage.removeItem('stock_portfolio_backup_snapshot');
+          window.location.href = window.location.origin + window.location.pathname;
+          return;
+        }
+
+        const mode = params.get('mode');
+        const role = params.get('role');
+        const isRead = mode === 'readonly' || role === 'viewer' || mode === 'view' || params.has('readonly');
+        
+        if (isRead) {
+          setIsReadOnly(true);
+          
+          // 当月の検証トークンキーと比較
+          const keyParam = params.get('key');
+          const t = new Date();
+          const y = t.getFullYear();
+          const m = String(t.getMonth() + 1).padStart(2, '0');
+          const expectedKey = btoa(`stock-${y}-${m}`).substring(0, 8);
+          
+          if (keyParam !== expectedKey) {
+            setIsLinkExpired(true);
+          }
+        }
+      } catch (e) {
+        // ignore
       }
     }
 
     async function load() {
       try {
         const { stocks: loadedStocks, tabs: loadedTabs } = await initializeDefaultData();
-        const fullyCleaned = (loadedStocks || []).map((s) => {
-          const info = getAutoTseJapaneseInfo(s.code, s.name);
-          return { ...s, name: info.name, sector: info.sector };
+        let safeStocks = Array.isArray(loadedStocks) ? loadedStocks : [];
+        const safeTabs = Array.isArray(loadedTabs) && loadedTabs.length > 0 ? loadedTabs : DEFAULT_TABS;
+
+        // 既存データの中にある明らかな異常値 (90円や0.63円など) を自動検知して0(非表示)に自動クレンジング
+        safeStocks = safeStocks.map((s) => {
+          const cleanPrice = (val: number) => (val === 90 || val < 1.0) ? 0 : val;
+          return {
+            ...s,
+            previousPrice: cleanPrice(s.previousPrice || 0),
+            price5DaysAgo: cleanPrice(s.price5DaysAgo || 0),
+            price20DaysAgo: cleanPrice(s.price20DaysAgo || 0),
+            priceYearStart: cleanPrice(s.priceYearStart || 0),
+            adoptPrice: cleanPrice(s.adoptPrice || 0)
+          };
         });
-        setStocks(fullyCleaned);
-        saveStocks(fullyCleaned);
-        setTabs(loadedTabs || DEFAULT_TABS);
-        
-        try {
-          const currentSettings = getSyncSettings();
-          setSettings(currentSettings);
-        } catch (e) {
-          // ignore
-        }
+
+        setStocks(safeStocks);
+        setTabs(safeTabs);
+
+        // バックグラウンドで時間を分散（スリープ遅延）させてクローラー制限を回避しながら本物のデータを同期
+        updateAllStocksRealDataSequentially(safeStocks);
       } catch (err) {
         console.error('Failed to initialize stock app data:', err);
       } finally {
@@ -146,15 +174,72 @@ export const App: React.FC = () => {
     load();
   }, []);
 
-  // 銘柄追加
+  /**
+   * クローラー制限（アクセスブロック）を回避するため、
+   * GASの知恵と同様にウェイト(Sleep)を挟みながら、1銘柄ずつ順次同期処理を行う関数
+   */
+  const updateAllStocksRealDataSequentially = async (targetsToUpdate: StockItem[]) => {
+    if (!targetsToUpdate || targetsToUpdate.length === 0) return;
+    
+    for (let i = 0; i < targetsToUpdate.length; i++) {
+      const stock = targetsToUpdate[i];
+      
+      // GASの知恵: 連続アクセスを避けるため、リクエスト間に 150ms〜350ms のランダムスリープを挿入
+      const randomWait = Math.floor(Math.random() * 200) + 150;
+      await sleep(randomWait);
+      
+      try {
+        const real = await fetchJpStockFullProfile(stock.code, stock.adoptDate);
+        if (real && real.currentPrice > 5) { // 異常値ガード
+          
+          const changePrevPct = Number((((real.currentPrice - real.previousPrice) / real.previousPrice) * 100).toFixed(2));
+          const change5dPct = Number((((real.currentPrice - real.price5DaysAgo) / real.price5DaysAgo) * 100).toFixed(2));
+          const change20dPct = Number((((real.currentPrice - real.price20DaysAgo) / real.price20DaysAgo) * 100).toFixed(2));
+          const changeYtdPct = Number((((real.currentPrice - real.priceYearStart) / real.priceYearStart) * 100).toFixed(2));
+
+          const adoptPrice = real.adoptPrice || stock.adoptPrice || real.currentPrice;
+          const changeAdoptPct = adoptPrice > 0 ? Number((((real.currentPrice - adoptPrice) / adoptPrice) * 100).toFixed(2)) : 0;
+
+          // バグ修正箇所：引数で渡されたリストだけでなく、「アプリ全体の全銘柄の状態」を安全に部分更新
+          setStocks((prevStocks) => {
+            const updated = prevStocks.map((s) => {
+              if (s.code === stock.code) {
+                return {
+                  ...s,
+                  currentPrice: real.currentPrice,
+                  previousPrice: real.previousPrice,
+                  changePrevPct,
+                  price5DaysAgo: real.price5DaysAgo,
+                  change5dPct,
+                  price20DaysAgo: real.price20DaysAgo,
+                  change20dPct,
+                  priceYearStart: real.priceYearStart,
+                  changeYtdPct,
+                  adoptPrice,
+                  changeAdoptPct
+                };
+              }
+              return s;
+            });
+            saveStocks(updated); // ローカルストレージにもアプリ全体データを保存
+            return updated;
+          });
+        }
+      } catch (err) {
+        console.error(`Sequencing fetch failed for stock: ${stock.code}`, err);
+      }
+    }
+  };
+
   const handleAddStock = (newStock: StockItem) => {
     if (isReadOnly) return;
     const updated = [{ ...newStock, tabId: activeTabId }, ...stocks];
     setStocks(updated);
     saveStocks(updated);
+    // 新規登録したその1銘柄だけを、既存の他の銘柄を破壊せずにバックグラウンドで安全同期
+    updateAllStocksRealDataSequentially([{ ...newStock, tabId: activeTabId }]);
   };
 
-  // 銘柄削除
   const handleDeleteStock = (stockId: string) => {
     if (isReadOnly) return;
     const updated = stocks.filter((s) => s.id !== stockId);
@@ -165,7 +250,6 @@ export const App: React.FC = () => {
     }
   };
 
-  // 銘柄更新
   const handleUpdateStock = (updatedStock: StockItem) => {
     if (isReadOnly) return;
     const updated = stocks.map((s) => (s.id === updatedStock.id ? updatedStock : s));
@@ -178,8 +262,54 @@ export const App: React.FC = () => {
 
   const currentTabStocks = (stocks || []).filter((s) => s.tabId === activeTabId);
 
+  if (isLinkExpired) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        background: '#0b0f19',
+        color: '#fff',
+        fontFamily: 'sans-serif',
+        padding: '20px',
+        textAlign: 'center'
+      }}>
+        <div style={{
+          background: 'rgba(239, 68, 68, 0.1)',
+          border: '2px solid #ef4444',
+          borderRadius: '16px',
+          padding: '40px 30px',
+          maxWidth: '500px',
+          boxShadow: '0 8px 32px rgba(239, 68, 68, 0.2)'
+        }}>
+          <Lock size={60} style={{ color: '#ef4444', marginBottom: '20px', marginLeft: 'auto', marginRight: 'auto' }} />
+          <h2 style={{ fontSize: '1.5rem', fontWeight: 800, marginBottom: '16px' }}>共有リンクの有効期限切れ</h2>
+          <p style={{ fontSize: '0.95rem', lineHeight: '1.6', color: '#cbd5e1', marginBottom: '24px' }}>
+            この共有閲覧用URLはセキュリティ保護のため、有効期限（月末）が経過して無効化されています。
+            <br />
+            今月の新しい共有閲覧用URLを発行し直すよう、管理者に請求してください。
+          </p>
+          <div style={{ fontSize: '0.8rem', color: '#64748b' }}>
+            Security System Locked
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-container">
+      {/* 非表示のファイル入力欄のみDOM上に保持 */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept=".csv, .json"
+        onChange={handleFileImport}
+        style={{ display: 'none' }}
+      />
+
       {/* 閲覧専用モード警告バー */}
       {isReadOnly && (
         <div
@@ -229,73 +359,8 @@ export const App: React.FC = () => {
         onExportJSON={() => exportDataAsJSON(stocks || [], tabs || [])}
       />
 
-      {/* 画面中央最優先設置：権限共有 ＆ CSV復元＆採用日補正コントロールパネル */}
-      <div className="glass-card" style={{ padding: '12px 18px', marginBottom: '14px', background: 'rgba(15, 23, 42, 0.85)', border: '1px solid rgba(56, 189, 248, 0.3)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <ShieldCheck size={18} style={{ color: 'var(--accent-cyan)' }} />
-            <span style={{ fontSize: '0.88rem', fontWeight: 800, color: '#fff' }}>共有 ＆ CSV復元・採用日補正パネル:</span>
-          </div>
-
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
-            <input
-              type="file"
-              ref={fileInputRef}
-              accept=".csv, .json"
-              onChange={handleFileImport}
-              style={{ display: 'none' }}
-            />
-
-            {/* 📥 CSVファイルの読み込みボタン */}
-            <button
-              className="btn btn-primary"
-              onClick={() => fileInputRef.current?.click()}
-              style={{ background: '#10b981', borderColor: '#10b981', color: '#fff', fontWeight: 800, padding: '6px 14px' }}
-              title="保存したCSVまたはJSONファイルを選択して登録データを一括復元します"
-            >
-              <Upload size={16} />
-              <span>📥 CSVファイルを読み込んで復元</span>
-            </button>
-
-            {/* 📅 全銘柄の採用日一括変更ボタン */}
-            {!isReadOnly && (
-              <button
-                className="btn btn-secondary"
-                onClick={handleBulkUpdateAdoptDate}
-                style={{ background: 'rgba(99, 102, 241, 0.15)', color: '#818cf8', borderColor: 'rgba(99, 102, 241, 0.3)', fontSize: '0.78rem' }}
-                title="全銘柄の採用日を指定の過去日付に一括で補正変更します"
-              >
-                <Calendar size={14} />
-                <span>📅 採用日を一括変更</span>
-              </button>
-            )}
-
-            {/* 1. 閲覧専用URLコピーボタン */}
-            <button
-              className="btn btn-secondary"
-              onClick={() => copyUrl(readonlyUrl, 'readonly')}
-              style={{ background: 'rgba(234, 179, 8, 0.15)', color: '#facc15', borderColor: 'rgba(234, 179, 8, 0.3)', fontSize: '0.78rem' }}
-            >
-              {copiedType === 'readonly' ? <Check size={14} /> : <Eye size={14} />}
-              <span>{copiedType === 'readonly' ? '閲覧URLコピー完了' : '👁 閲覧専用URL'}</span>
-            </button>
-
-            {/* 2. 編集許可URLコピーボタン */}
-            <button
-              className="btn btn-secondary"
-              onClick={() => copyUrl(editorUrl, 'editor')}
-              style={{ background: 'rgba(56, 189, 248, 0.15)', color: 'var(--accent-cyan)', borderColor: 'rgba(56, 189, 248, 0.3)', fontSize: '0.78rem' }}
-            >
-              {copiedType === 'editor' ? <Check size={14} /> : <Edit3 size={14} />}
-              <span>{copiedType === 'editor' ? '編集URLコピー完了' : '✏️ 編集許可URL'}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
       {/* メインコンテンツエリア */}
       <main className="main-content">
-        {/* タブナビゲーション */}
         <TabNavigation
           tabs={tabs || DEFAULT_TABS}
           activeTabId={activeTabId}
@@ -311,23 +376,24 @@ export const App: React.FC = () => {
           }}
         />
 
-        {/* 読み込み中・銘柄テーブル表示 */}
         {loading ? (
           <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-secondary)' }}>
             <div className="animate-spin" style={{ display: 'inline-block', marginBottom: '12px', fontSize: '1.5rem' }}>⌛</div>
-            <div>最新の株価データを公式時系列APIより同期中...</div>
+            <div>最新の株価データを同期中...</div>
           </div>
         ) : (
           <StockTable
             stocks={currentTabStocks}
+            tabs={tabs || DEFAULT_TABS}
             isReadOnly={isReadOnly}
             onSelectStock={setSelectedStock}
             onDeleteStock={handleDeleteStock}
+            onUpdateStock={handleUpdateStock}
           />
         )}
       </main>
 
-      {/* 1. 銘柄追加モーダル */}
+      {/* モーダル群 */}
       {isAddModalOpen && !isReadOnly && (
         <AddStockModal
           tabs={tabs || DEFAULT_TABS}
@@ -337,7 +403,6 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* 2. 銘柄詳細モーダル */}
       {selectedStock && (
         <StockDetailModal
           stock={selectedStock}
@@ -347,7 +412,6 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* 3. 設定・共有モーダル */}
       {isShareModalOpen && (
         <ShareConfigModal
           tabs={tabs || DEFAULT_TABS}
@@ -361,6 +425,7 @@ export const App: React.FC = () => {
           }}
           onExportCSV={() => exportDataAsCSV(stocks || [])}
           onExportJSON={() => exportDataAsJSON(stocks || [], tabs || [])}
+          onImportCSVClick={() => fileInputRef.current?.click()} // CSV読み込みトリガーの連結
         />
       )}
     </div>

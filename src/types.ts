@@ -2,14 +2,21 @@ export type StockScale = '大型' | '中型' | '小型';
 
 export interface FinancialQuarterNote {
   id: string;
-  period: string; // 例: "2024年 3月期 4Q", "2025年 3月期 1Q"
-  releaseDate: string; // 発表日
-  revenue?: number; // 売上高（百万円）
-  operatingProfit?: number; // 営業利益（百万円）
-  netProfit?: number; // 当期純利益（百万円）
-  progressRate?: number; // 進捗率 (%)
-  impression: 'positive' | 'neutral' | 'negative'; // 評価
-  summaryNote: string; // 決算ハイライトメモ
+  date?: string; // 日付 (YYYY-MM-DD)
+  title?: string; // タイトル
+  evaluation?: 'ポジ' | 'ニュートラル' | 'ネガ'; // 決算・IR評価
+  comment?: string; // 分析コメント (大きな枠)
+  pinned?: boolean; // 最上部ピン留めフラグ
+  
+  // 過去互換用
+  period?: string;
+  releaseDate?: string;
+  revenue?: number;
+  operatingProfit?: number;
+  netProfit?: number;
+  progressRate?: number;
+  impression?: 'positive' | 'neutral' | 'negative';
+  summaryNote?: string;
   updatedAt: string;
 }
 
@@ -17,10 +24,18 @@ export interface IRComment {
   id: string;
   date: string; // 日付 YYYY-MM-DD
   title: string; // 見出し・トピック
-  category: '決算説明会' | '適時開示' | 'ニュース' | '目標株価・アナリスト' | '定性メモ・分析';
+  category: string;
   content: string; // 詳細内容・分析コメント
-  author?: string; // 記録者名（共有時に便利）
+  author?: string; // 記録者名
   tags?: string[];
+  createdAt: string;
+}
+
+export interface FeatureNote {
+  id: string;
+  date?: string; // 日付
+  title?: string; // タイトル
+  comment?: string; // コメント欄 (大きな枠)
   createdAt: string;
 }
 
@@ -53,8 +68,9 @@ export interface StockItem {
   
   tabId: string; // 所属するタブID ("tab-30", "tab-a", "tab-b" 等)
   
-  financialNotes: FinancialQuarterNote[]; // 各期決算情報
-  irComments: IRComment[]; // IR・コメントタイムライン
+  financialNotes: FinancialQuarterNote[]; // 決算・IRコメント
+  irComments: IRComment[]; // 各種ログ一覧
+  featureNotes?: FeatureNote[]; // 銘柄特徴・分析
   chartHistory?: HistoricalPoint[]; // チャート表示用過去株価履歴
   
   updatedAt: string; // データ最終更新時刻

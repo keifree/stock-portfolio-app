@@ -195,6 +195,13 @@ async function createStockFromApi(
   const todayStr = new Date().toISOString().split('T')[0];
   const adoptDate = adoptDateParam || todayStr;
   
+  const targetTabName = tabId === 'tab-30' ? '30銘柄' : tabId === 'tab-a' ? 'A銘柄' : tabId === 'tab-b' ? 'B銘柄' : 'ポートフォリオ';
+  const todayObj = new Date();
+  const yy = String(todayObj.getFullYear()).substring(2);
+  const mm = String(todayObj.getMonth() + 1).padStart(2, '0');
+  const dd = String(todayObj.getDate()).padStart(2, '0');
+  const dateStrYYMMDD = `${yy}/${mm}/${dd}`;
+
   let adoptPrice = adoptPriceParam;
   if (!adoptPrice) {
     const historicalAdopt = (chartHistory || []).find((h: any) => h.date === adoptDate) || 
@@ -231,29 +238,16 @@ async function createStockFromApi(
     scale,
     tabId,
     
-    financialNotes: [
-      {
-        id: 'fin-1',
-        period: '2025年3月期 1Q',
-        releaseDate: '2024-08-02',
-        revenue: Math.round(marketCap * 0.15),
-        operatingProfit: Math.round(marketCap * 0.02),
-        netProfit: Math.round(marketCap * 0.015),
-        progressRate: 27.5,
-        impression: 'positive',
-        summaryNote: `${tseInfo.name || cleanCode}の決算情報。東証全銘柄マスター連携中。`,
-        updatedAt: new Date().toISOString()
-      }
-    ],
+    financialNotes: [], // 初期状態は空手帳
     irComments: [
       {
-        id: 'ir-1',
+        id: `ir-init-${cleanCode}-${Date.now()}`,
         date: todayStr,
-        title: '株探設定データ連携完了',
-        category: '定性メモ・分析',
-        content: `銘柄 [${cleanCode}] ${tseInfo.name || cleanCode} (セクター: ${fetchedSector}, 指定採用日: ${adoptDate}, 採用時終値: ¥${finalAdoptPrice})`,
-        author: '分析担当者',
-        tags: ['採用', fetchedSector || 'その他'],
+        title: '採用（登録）履歴',
+        category: 'イベント記録',
+        content: `${dateStrYYMMDD} に「${targetTabName}」へ新規採用（登録）されました。採用時終値: ¥${finalAdoptPrice.toLocaleString()}`,
+        author: 'システム自動記録',
+        tags: ['採用履歴'],
         createdAt: new Date().toISOString()
       }
     ],
