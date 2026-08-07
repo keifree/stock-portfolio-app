@@ -59,73 +59,90 @@
 ```text
 C:\Users\k1082\.gemini\antigravity\scratch\stock-portfolio-app-main\
 ├── handover_documentation.md        # 本引き継ぎドキュメント
-├── src/
-│   ├── App.tsx                      # メインコンポーネント・排他制御・5秒バッチ同期
-│   ├── types.ts                    # データ型定義 (StockItem, DistributionComment等)
-│   ├── services/
-│   │   ├── storage.ts               # 軽量JSON保存・Gist取得・横並びCSVインポート
-│   │   ├── tseMaster.ts             # 東証全4,005銘柄マスタ参照・動的時価総額計算
-│   │   ├── tseFullData.json         # 東証全上場4,005銘柄の公式日本語マスタ辞書
-│   │   └── yahooFinance.ts          # 統一市場日付マッピング・通信タイムアウト・プロキシ外層キャッシュ破棄
-│   └── components/
-│       ├── Header.tsx               # ヘッダー・JSON保存・同期・デバッグボタン
-│       ├── MarketOverviewTiles.tsx   # 市場比較タイル (日経平均・TOPIX・30銘柄平均)
-│       ├── StockTable.tsx           # ポートフォリオ一覧・カレンダー採用日編集・ソート
-│       ├── StockDetailModal.tsx     # 銘柄詳細モーダル（配信コメントタブ搭載）
-│       ├── DistributionComments.tsx # 配信コメント入力・一覧・外部リンク機能
-│       ├── DebugModal.tsx           # 生通信検証・リアルタイム市場日付診断ダイアログ
-│       ├── FinancialNotes.tsx       # 決算・IRメモ（評価選択・編集✏️・ピン留め）
-│       └── ShareConfigModal.tsx     # Secret Gist連動・閲覧URL発行・一括日本語化ボタン
+├── index.html                       # メインHTML
+├── package.json                     # 依存ライブラリ・スクリプト定義
+├── tsconfig.json                    # TypeScript設定
+├── vite.config.ts                   # Viteビルド設定
+├── .gitignore                       # Git管理除外設定 (node_modules, dist 除外)
+└── src/
+    ├── App.tsx                      # メインコンポーネント・排他制御・5秒バッチ同期
+    ├── types.ts                    # データ型定義 (StockItem, DistributionComment等)
+    ├── services/
+    │   ├── storage.ts               # 軽量JSON保存・Gist取得・横並びCSVインポート
+    │   ├── tseMaster.ts             # 東証全4,005銘柄マスタ参照・動的時価総額計算
+    │   ├── tseFullData.json         # 東証全上場4,005銘柄の公式日本語マスタ辞書
+    │   └── yahooFinance.ts          # 統一市場日付マッピング・通信タイムアウト・プロキシ外層キャッシュ破棄
+    └── components/
+        ├── Header.tsx               # タイトル・値上がり/値下がり数サマリー
+        ├── Footer.tsx               # デバッグ診断・最新株価同期・JSON保存・共有設定フッター
+        ├── TabNavigation.tsx        # カテゴリタブ + グループ追加 + 銘柄追加ボタン
+        ├── MarketOverviewTiles.tsx   # 市場比較タイル (日経平均・TOPIX・30銘柄平均)
+        ├── StockTable.tsx           # ポートフォリオ一覧・カレンダー採用日編集・ソート・useMemo最適化
+        ├── StockDetailModal.tsx     # 銘柄詳細モーダル（サブタブ切り替え・ログ閲覧）
+        ├── FinancialNotes.tsx       # 決算・IRメモ（評価選択・編集✏️・ピン留め・年度絞り込み・検索）
+        ├── DistributionComments.tsx # 配信コメント（入力・一覧・外部リンク・年度絞り込み・検索）
+        ├── FeatureNotes.tsx         # 銘柄特徴・分析メモ
+        ├── DebugModal.tsx           # 生通信検証・リアルタイム市場日付診断ダイアログ
+        └── ShareConfigModal.tsx     # Secret Gist連動・閲覧URL発行・一括日本語化ボタン
 ```
 
 ---
 
 ## 5. 最近追加された新機能 ＆ 解決済みバグ（次世代AI用ガイドライン）
 
-### 【追加された新機能】
-1. **📊 ダッシュボード「市場比較タイル (`MarketOverviewTiles.tsx`)」**:
+### 【追加された新機能 ＆ デザイン再構築】
+1. **🎨 ダッシュボードレイアウト再構築 & フッター設置 (`Footer.tsx`)**:
+   - ヘッダーをタイトルと値上がり・値下がり件数情報のみに簡素化。
+   - 画面最下部に「フッター (`Footer.tsx`)」を新設し、「🔍 デバッグ診断」「🔄 最新株価同期」「📦 JSON保存」「🔗 共有設定」操作ボタンを移動集約。
+   - 「+ 銘柄を追加」ボタンを「30銘柄」「A銘柄」等のカテゴリタブ行の右端へ配置。
+   - 「日経平均」「TOPIX」「30銘柄平均」の市場比較タイルをテーブル直下（フッター直上）へ配置。
+2. **📅 銘柄詳細コメントの「年度別絞り込み ＆ フリーワードリアルタイム検索」**:
+   - 「決算・IRコメント (`FinancialNotes.tsx`)」「配信コメント (`DistributionComments.tsx`)」「各種ログ一覧 (`StockDetailModal.tsx`)」に年度選択ドロップダウン（`2026年`, `2025年`...）と検索バー（タイトル・本文部分一致）を搭載。
+3. **📊 ダッシュボード「市場比較タイル (`MarketOverviewTiles.tsx`)」**:
    - 日経平均 (`^N225`)・TOPIX (`1306.T` ETF代替)・主力30銘柄平均 の3つを並列表示。
-   - 「現在値」「前日比(値/%)」「5日比(値/%)」「20日比(値/%)」「年始比(値/%)」を一目で比較可能。
-2. **📢 銘柄詳細 modal 「配信コメント」タブ (`DistributionComments.tsx`)**:
+4. **📢 銘柄詳細 modal 「配信コメント」タブ (`DistributionComments.tsx`)**:
    - 日付、タイトル、配信リンク（外部リンクボタン付き）、大きめコメント欄を管理・編集可能。
-3. **📅 採用日編集のカレンダー単一化 (`StockTable.tsx`)**:
-   - 重複表示されていたテキスト手入力枠を削除し、直感的な `<input type="date">` カレンダー選択枠のみに一本化。
-4. **🔍 リアルタイム通信デバッグ ＆ キャッシュ破棄診断モーダル (`DebugModal.tsx`)**:
-   - ヘッダーの「🔍 デバッグ診断」ボタンから起動。
-   - 共通市場基準日付（8/7, 8/6, 7/31, 7/9等）と各銘柄の生API取得結果を表示・検証。
-   - ワンクリックでキャッシュを全破棄し、109銘柄を強制最新再取得。
+5. **🧹 コードベース全体の総メンテナンス・型完全厳密化・パフォーマンス最適化**:
+   - `cleanStockForStorage` において `distributionComments` や `featureNotes` などの全サブリストを型安全に完全保存・復元。
+   - `StockDetailModal.tsx` 内の即時実行関数 `(() => { ... })()` を独立したヘルパー関数へ分離。
+   - `StockTable.tsx` での検索・ソート結果の `useMemo` によるキャッシュ・高速化。
 
 ---
 
 ### 【克服した重大なバグ・技術的ハマりポイント ＆ 再発防止ルール】
 
-#### 1. TOPIX指標の404エラー解消
+#### 1. GitHub連携時のVercelビルド失敗バグ (`Permission denied` / Exit Code 126)
+- **原因**: GitHubリポジトリ上に `node_modules` フォルダ（Windows上のファイル群）がコミット・アップロードされたため、Vercelのビルドサーバー（Linux環境）が `node_modules/.bin/tsc` を実行する際に実行権限エラーが発生していた。
+- **解決策**: [`.gitignore`](file:///C:/Users/k1082/.gemini/antigravity/scratch/stock-portfolio-app-main/.gitignore) に `node_modules` および `dist` を追加指定。GitHub上の `node_modules` を削除し、Vercel側で自動的に依存関係をクリーンインストールさせて自動ビルドさせる仕様に徹底。
+- **ルール**: **`node_modules` や `dist` フォルダは絶対にGit/GitHubへコミット・アップロードしないこと。**
+
+#### 2. TOPIX指標の404エラー解消
 - **原因**: Yahoo Finance API で指数シンボル `998405.T` が HTTP 404 エラーを返却していた。
 - **解決策**: TOPIX指数に100%追従する野村NEXT FUNDS TOPIX ETF (`1306.T`) をTOPIX市場指標のフォールバックとして採用。
 - **ルール**: **TOPIXのデータ取得時は必ず `1306.T` を参照すること。**
 
-#### 2. CORSプロキシのエッジキャッシュ（Cloudflare等）による旧値固定バグ
+#### 3. CORSプロキシのエッジキャッシュ（Cloudflare等）による旧値固定バグ
 - **原因**: `api.allorigins.win` 等のプロキシサーバーが `1605.T` などの銘柄レスポンスをEdge CDN側でキャッシュし、内側URLの `&_t=` だけでは旧値が返され続けていた。
 - **解決策**: プロキシ通信最外層URLの末尾に `&_t=${Date.now()}&cb=${Math.random().toString(36).substring(2)}` を直接付与し、プロキシ側のエッジキャッシュを100%強制破棄。
 - **ルール**: **`fetchWithResilience` のプロキシURL構築時は、プロキシ最外層に必ずタイムスタンプと乱数クエリを直接付与すること。**
 
-#### 3. 銘柄ごとのAPI配列長ズレによる営業日数ミスマッチ解消 (大成建設・日経平均基準のカレンダー市場日付マッピング)
+#### 4. 銘柄ごとのAPI配列長ズレによる営業日数ミスマッチ解消 (大成建設・日経平均基準のカレンダー市場日付マッピング)
 - **原因**: Yahoo Finance APIの銘柄別データ配列長（`N`）が最新日の `null` 有無等で1日分異なり、「末尾から `N-6` 個目」等の配列相対位置計算では銘柄ごとに参照するカレンダー日付が `7/31` から `7/30` や `7/29` へズレていた。
 - **解決策**: 配列相対位置計算を全廃。日経平均 (`^N225`) および大成建設 (`1801.T`) で確定した**共通カレンダー市場日付軸**（例: 現在値 8/7、前日比 8/6、5日比 7/31、20日比 7/09）を決定し、全109銘柄で指定日以下の直近営業日価格を `Map<DateStr, Price>` でルックアップ。
 - **ルール**: **銘柄ごとの指標計算時は、配列相対位置 (`N-6` 等) を使わず、必ず `MarketReferenceDates` の絶対カレンダー日付マッピングを使用すること。**
 
-#### 4. 109銘柄同期のプログレスバー巻き戻り・ループ現象の完全防止
+#### 5. 109銘柄同期のプログレスバー巻き戻り・ループ現象の完全防止
 - **原因**: 画面ロード時の自動同期と「最新株価同期」ボタンの同時実行により、2つの同期非同期ループが並行動作して `syncProgress` ステートを互いに上書きしていた。
 - **解決策**: `isSyncingRef = useRef(false)` による排他制御フラグを導入。同期実行中の二重起動を100%ブロック。
 - **速度向上**: 4銘柄ずつの並列バッチ処理 (`Promise.allSettled`) を導入し、109銘柄の同期をわずか約5秒に高速化。
 - **ルール**: **同期処理開始時は必ず `isSyncingRef` による排他ガードを実施すること。**
 
-#### 5. 銘柄コード表記揺れ (`1605` vs `1605.T` vs `1605 INPEX`) の100%確定照合
+#### 6. 銘柄コード表記揺れ (`1605` vs `1605.T` vs `1605 INPEX`) の100%確定照合
 - **原因**: コード文字列に含まれる空白や銘柄名、`.T` の有無により `formatSymbol` が不正シンボルを生成して404エラーになる、あるいは Reactステート更新時の `===` 比較で不一致になり画面が更新されない現象があった。
 - **解決策**: `formatSymbol` 内で正規表現 `(\d{4})` による4桁数字優先抽出を適用。また `isSameStockCode` による正規化コード比較を適用。
 - **ルール**: **銘柄コード判定・変換時は必ず4桁数字抽出と正規化比較を行うこと。**
 
-#### 6. `StockTable.tsx` 内の不要な二重ステート (`localStocks`) 除去による画面描画即時化
+#### 7. `StockTable.tsx` 内の不要な二重ステート (`localStocks`) 除去による画面描画即時化
 - **原因**: `StockTable` の内部に独自ステート `localStocks` が存在し、親の `App.tsx` で最新株価が更新されても画面上のテーブルが旧データの `localStocks` を描画し続けていた。
 - **解決策**: `localStocks` を全廃し、`StockTable` が `App.tsx` の `stocks` プロップスを直接参照して描画。
 - **ルール**: **コンポーネント内で `stocks` データの複製ステートを作成せず、必ず単一のプロップス・ソースから直接描画すること。**
@@ -134,8 +151,13 @@ C:\Users\k1082\.gemini\antigravity\scratch\stock-portfolio-app-main\
 
 ## 6. 本番公開・更新手順
 - **本番サイト URL**: `https://stock-portfolio-app-faso.vercel.app`
-- **コード更新・デプロイコマンド**:
-  1. コマンドプロンプトでプロジェクトフォルダに移動:
-     `cd "C:\Users\k1082\.gemini\antigravity\scratch\stock-portfolio-app-main"`
-  2. 以下のコマンドを実行（10秒で本番サイトが最新化）:
-     `npx vercel --prod`
+- **コード更新・デプロイ手順**:
+  - **方法① (Git経由での自動デプロイ)**:
+    1. ソースコードを修正後、GitにコミットしてGitHubへプッシュします。
+       （※ `.gitignore` により `node_modules` と `dist` は自動除外されます）。
+    2. Vercelがプッシュを検知し、数秒で自動的に本番サイトを更新します。
+  - **方法② (CLIからのダイレクト本番デプロイ)**:
+    1. コマンドプロンプトでプロジェクトフォルダに移動:
+       `cd "C:\Users\k1082\.gemini\antigravity\scratch\stock-portfolio-app-main"`
+    2. 以下のコマンドを実行（10秒で本番サイトが最新化）:
+       `npx vercel --prod`
