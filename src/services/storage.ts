@@ -1,4 +1,4 @@
-import { StockItem, TabConfig, SyncSettings } from '../types';
+import { StockItem, TabConfig, SyncSettings, FinancialQuarterNote, DistributionComment, FeatureNote, IRComment } from '../types';
 import { getAutoTseJapaneseInfo, calculateDynamicMarketCap } from './tseMaster';
 
 const STORAGE_KEYS = {
@@ -26,7 +26,6 @@ export function getStoredStocks(): StockItem[] {
       .map((s) => {
         const info = getAutoTseJapaneseInfo(s.code, s.name);
         const currentPrice = typeof s.currentPrice === 'number' && s.currentPrice > 0 ? s.currentPrice : 2000;
-        
         const realCap = calculateDynamicMarketCap(s.code, currentPrice);
 
         let cleanAdoptDate = '2024-08-01';
@@ -68,6 +67,8 @@ export function getStoredStocks(): StockItem[] {
           tabId: s.tabId || 'tab-30',
           financialNotes: Array.isArray(s.financialNotes) ? s.financialNotes : [],
           irComments: Array.isArray(s.irComments) ? s.irComments : [],
+          featureNotes: Array.isArray(s.featureNotes) ? s.featureNotes : [],
+          distributionComments: Array.isArray(s.distributionComments) ? s.distributionComments : [],
           updatedAt: s.updatedAt || new Date().toISOString()
         };
       });
@@ -94,7 +95,8 @@ export function cleanStockForStorage(stock: StockItem): StockItem {
         }))
       : [],
     irComments: Array.isArray(stock.irComments) ? stock.irComments : [],
-    featureNotes: Array.isArray(stock.featureNotes) ? stock.featureNotes : []
+    featureNotes: Array.isArray(stock.featureNotes) ? stock.featureNotes : [],
+    distributionComments: Array.isArray(stock.distributionComments) ? stock.distributionComments : []
   };
 }
 
@@ -200,8 +202,6 @@ export function formatMarketCap(marketCapInOku: number): string {
   return `${Math.round(marketCapInOku).toLocaleString()}億円`;
 }
 
-
-
 function parseCSVLine(line: string): string[] {
   const result: string[] = [];
   let current = '';
@@ -226,7 +226,12 @@ function parseCSVLine(line: string): string[] {
   return result;
 }
 
-export function parseAndImportHorizontalFinancialCSV(csvText: string): { success: boolean; importedNotesCount: number; affectedStocksCount: number; stocks: StockItem[] } {
+export function parseAndImportHorizontalFinancialCSV(csvText: string): {
+  success: boolean;
+  importedNotesCount: number;
+  affectedStocksCount: number;
+  stocks: StockItem[];
+} {
   try {
     const currentStocks = getStoredStocks();
     if (!currentStocks || currentStocks.length === 0) {
@@ -234,11 +239,10 @@ export function parseAndImportHorizontalFinancialCSV(csvText: string): { success
     }
 
     const cleanText = csvText.replace(/^\uFEFF/, '');
-    
-    // カンマ区切りかつ改行対応の行分割
     const rawLines: string[] = [];
     let curLine = '';
     let inQ = false;
+
     for (let i = 0; i < cleanText.length; i++) {
       const char = cleanText[i];
       if (char === '"') {
@@ -277,7 +281,7 @@ export function parseAndImportHorizontalFinancialCSV(csvText: string): { success
       if (!targetStock) return;
 
       let stockNotesAdded = 0;
-      const newNotes: any[] = [];
+      const newNotes: FinancialQuarterNote[] = [];
 
       for (let i = 1; i < cells.length; i += 2) {
         const rawDate = (cells[i] || '').trim();
@@ -285,7 +289,6 @@ export function parseAndImportHorizontalFinancialCSV(csvText: string): { success
 
         if (!rawDate && !rawComment) continue;
 
-        // 日付の正規化 (YYYY/MM/DD, YYYY-MM-DD, YYYYMMDD 等)
         let formattedDate = rawDate;
         const dateMatch = rawDate.match(/^(\d{4})[/-]?(\d{1,2})[/-]?(\d{1,2})$/);
         if (dateMatch) {
@@ -328,7 +331,12 @@ export function parseAndImportHorizontalFinancialCSV(csvText: string): { success
   }
 }
 
-export async function fetchRemoteJSON(url: string): Promise<{ success: boolean; count: number; stocks: StockItem[]; tabs: TabConfig[] }> {
+export async function fetchRemoteJSON(url: string): Promise<{
+  success: boolean;
+  count: number;
+  stocks: StockItem[];
+  tabs: TabConfig[];
+}> {
   try {
     const res = await fetch(url, { cache: 'no-cache' });
     if (!res.ok) {
@@ -351,7 +359,12 @@ export async function fetchRemoteJSON(url: string): Promise<{ success: boolean; 
   }
 }
 
-export function parseAndImportJSON(jsonText: string): { success: boolean; count: number; stocks: StockItem[]; tabs?: TabConfig[] } {
+export function parseAndImportJSON(jsonText: string): {
+  success: boolean;
+  count: number;
+  stocks: StockItem[];
+  tabs?: TabConfig[];
+} {
   try {
     const parsed = JSON.parse(jsonText);
     if (parsed && Array.isArray(parsed.stocks) && parsed.stocks.length > 0) {
@@ -364,7 +377,7 @@ export function parseAndImportJSON(jsonText: string): { success: boolean; count:
       if (Array.isArray(parsed.tabs) && parsed.tabs.length > 0) {
         saveTabs(parsed.tabs);
       }
-      return { success: true, count: stocks.length, stocks };
+      return { success: true, count: stocks.length, stocks, tabs: parsed.tabs };
     }
     return { success: false, count: 0, stocks: [] };
   } catch (e) {
@@ -379,11 +392,8 @@ export async function initializeDefaultData(): Promise<{ stocks: StockItem[]; ta
   return { stocks: existingStocks, tabs: existingTabs };
 }
 
-
-
 export function exportDataAsJSON(stocks: StockItem[], tabs: TabConfig[]): void {
   const rawOriginalSize = JSON.stringify({ tabs, stocks }, null, 2).length;
-
   const cleanedStocks = (stocks || []).map(cleanStockForStorage);
   const data = {
     exportedAt: new Date().toISOString(),

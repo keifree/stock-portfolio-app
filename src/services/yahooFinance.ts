@@ -1,3 +1,5 @@
+import { calculateDynamicMarketCap } from './tseMaster';
+
 export interface StockFullProfile {
   currentPrice: number;
   previousPrice: number;
@@ -8,223 +10,284 @@ export interface StockFullProfile {
   marketCap?: number;
 }
 
+export interface MarketReferenceDates {
+  currentDate: string;  // 例: "2026-08-07"
+  prev1Date: string;    // 例: "2026-08-06"
+  prev5Date: string;    // 例: "2026-07-31"
+  prev20Date: string;   // 例: "2026-07-09"
+  yearStartDate: string;// 例: "2026-01-05"
+}
+
+export interface MarketIndexMetrics {
+  name: string;
+  symbol: string;
+  currentPrice: number;
+  previousPrice: number;
+  changePrevVal: number;
+  changePrevPct: number;
+  price5DaysAgo: number;
+  change5dVal: number;
+  change5dPct: number;
+  price20DaysAgo: number;
+  change20dVal: number;
+  change20dPct: number;
+  priceYearStart: number;
+  changeYtdVal: number;
+  changeYtdPct: number;
+}
+
 function formatSymbol(code: string): string {
-  if (!code) return "";
+  if (!code) return '';
   const upper = code.trim().toUpperCase();
-  
-  if (upper.includes("N225") || upper.includes("NI222") || upper.includes("NI225") || upper.includes("NIKKEI")) {
-    return "^N225";
+
+  if (upper.includes('N225') || upper.includes('NI225') || upper.includes('NIKKEI')) {
+    return '^N225';
   }
-  if (upper.includes("TOPX") || upper.includes("TOPIX") || upper.includes("998405")) {
-    return "998405.T";
+  if (upper.includes('TOPX') || upper.includes('TOPIX') || upper.includes('998405')) {
+    return '1306.T'; // TOPIX連動型ETF (1306.T)
   }
-  
-  if (!upper.endsWith(".T") && !upper.startsWith("^")) {
-    return upper + ".T";
+
+  // 銘柄コード文字列から確実に4桁数字を優先抽出
+  const digitMatch = upper.match(/(\d{4})/);
+  if (digitMatch) {
+    return `${digitMatch[1]}.T`;
+  }
+
+  if (!upper.endsWith('.T') && !upper.startsWith('^')) {
+    return `${upper}.T`;
   }
   return upper;
 }
 
-const CORS_PROXIES = [
-  (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  (url: string) => `https://thingproxy.freeboard.io/fetch/${url}`
+const PROXIES = [
+  // 1. ダイレクト通信 (最優先)
+  async (url: string, signal: AbortSignal) => {
+    const res = await fetch(url, { signal, headers: { Accept: 'application/json' } });
+    if (res.ok) return await res.json();
+    throw new Error(`Direct fetch status ${res.status}`);
+  },
+  // 2. AllOrigins get JSON
+  async (url: string, signal: AbortSignal) => {
+    const cb = `_t=${Date.now()}&cb=${Math.random().toString(36).substring(2)}`;
+    const pUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}&${cb}`;
+    const res = await fetch(pUrl, { signal });
+    if (res.ok) {
+      const data = await res.json();
+      return typeof data.contents === 'string' ? JSON.parse(data.contents) : data.contents;
+    }
+    throw new Error(`AllOrigins get status ${res.status}`);
+  },
+  // 3. AllOrigins raw
+  async (url: string, signal: AbortSignal) => {
+    const cb = `_t=${Date.now()}&cb=${Math.random().toString(36).substring(2)}`;
+    const pUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}&${cb}`;
+    const res = await fetch(pUrl, { signal });
+    if (res.ok) return await res.json();
+    throw new Error(`AllOrigins raw status ${res.status}`);
+  },
+  // 4. CorsProxy io
+  async (url: string, signal: AbortSignal) => {
+    const cb = `_t=${Date.now()}&cb=${Math.random().toString(36).substring(2)}`;
+    const pUrl = `https://corsproxy.io/?${encodeURIComponent(url)}&${cb}`;
+    const res = await fetch(pUrl, { signal, headers: { Accept: 'application/json' } });
+    if (res.ok) return await res.json();
+    throw new Error(`CorsProxy status ${res.status}`);
+  }
 ];
 
-async function fetchViaProxy(targetUrl: string): Promise<any> {
-  let lastError: any = null;
-  
-  for (const proxyFn of CORS_PROXIES) {
+export async function fetchWithResilience(targetUrl: string, timeoutMs: number = 2500): Promise<any> {
+  for (const proxyFn of PROXIES) {
     try {
-      const url = proxyFn(targetUrl);
-      const res = await fetch(url, { headers: { "Accept": "application/json" } });
-      if (res.ok) {
-        const text = await res.text();
-        try {
-          return JSON.parse(text);
-        } catch {
-          return await res.json();
-        }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const data = await proxyFn(targetUrl, controller.signal).finally(() => clearTimeout(timer));
+      if (data && data.chart && data.chart.result) {
+        return data;
       }
-    } catch (e) {
-      lastError = e;
+    } catch {
       continue;
     }
   }
-  throw lastError || new Error("All CORS proxies failed");
+  return null;
+}
+
+export function getMarketReferenceDatesFromChart(result: any): MarketReferenceDates | null {
+  const timestamps: number[] = result?.timestamp || [];
+  const quotes: number[] = result?.indicators?.quote?.[0]?.close || [];
+  const validDates: string[] = [];
+
+  for (let i = 0; i < timestamps.length; i++) {
+    const q = quotes[i];
+    if (q !== null && q !== undefined && !isNaN(q) && q > 0) {
+      const d = new Date(timestamps[i] * 1000);
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      validDates.push(`${yyyy}-${mm}-${dd}`);
+    }
+  }
+
+  const n = validDates.length;
+  if (n === 0) return null;
+
+  const currentDate = validDates[n - 1];
+  const prev1Date = n >= 2 ? validDates[n - 2] : currentDate;
+  const prev5Date = n >= 6 ? validDates[n - 6] : prev1Date;
+  const prev20Date = n >= 21 ? validDates[n - 21] : prev1Date;
+
+  const currentYear = new Date().getFullYear();
+  const ytdDate = validDates.find(d => d.startsWith(`${currentYear}-`)) || validDates[0];
+
+  return {
+    currentDate,
+    prev1Date,
+    prev5Date,
+    prev20Date,
+    yearStartDate: ytdDate
+  };
 }
 
 /**
- * 日本株の指定日の株価を取得するカスタム関数（GASのGET_JP_STOCK_DATE_PRICEと完全同一ロジック）
- * 採用日がどれだけ古くても（2025年1月4日等）、ピンポイントでその前後期間のタイムスタンプを指定して確実に取得します。
+ * 指定日の株価を個別取得するカスタム関数
  */
 export async function fetchJpStockDatePrice(code: string, targetDateStr: string): Promise<number | null> {
   if (!code || !targetDateStr) return null;
   const sym = formatSymbol(code);
-  
+
   try {
     const d = new Date(targetDateStr);
     if (isNaN(d.getTime())) return null;
-    
-    // 指定日の23:59:59タイムスタンプを基準（GASと完全一致）
+
     d.setHours(23, 59, 59, 999);
     const targetSec = Math.floor(d.getTime() / 1000);
-    
-    // 指定日の前15日間・後2日間のデータ範囲（年末年始連休・大型連休・土日祝日をカバー）
+
     const period1 = targetSec - 86400 * 15;
     const period2 = targetSec + 86400 * 2;
-    
-    const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?period1=${period1}&period2=${period2}&interval=1d`;
-    const json = await fetchViaProxy(targetUrl);
-    
+
+    const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?period1=${period1}&period2=${period2}&interval=1d&_t=${Date.now()}`;
+    const json = await fetchWithResilience(targetUrl, 2500);
+
     const result = json?.chart?.result?.[0];
     if (!result) return null;
-    
-    const timestamps = result.timestamp;
-    const quotes = result.indicators?.quote?.[0]?.close;
-    if (!timestamps || !quotes) return null;
-    
+
+    const timestamps: number[] = result.timestamp || [];
+    const quotes: number[] = result.indicators?.quote?.[0]?.close || [];
+    if (!timestamps.length || !quotes.length) return null;
+
     let lastValidPrice: number | null = null;
     let maxTimestampBeforeTarget = -1;
-    
+
     for (let i = 0; i < timestamps.length; i++) {
       const ts = timestamps[i];
       const price = quotes[i];
-      
+
       if (price !== null && price !== undefined && !isNaN(price)) {
-        // 指定日以前の中で最も最新の営業日を取得（GASと完全一致）
-        if (ts <= targetSec) {
-          if (ts > maxTimestampBeforeTarget) {
-            maxTimestampBeforeTarget = ts;
-            lastValidPrice = price;
-          }
+        if (ts <= targetSec && ts > maxTimestampBeforeTarget) {
+          maxTimestampBeforeTarget = ts;
+          lastValidPrice = price;
         }
       }
     }
-    
+
     if (lastValidPrice !== null) {
       return Math.round(lastValidPrice * 100) / 100;
     }
   } catch (e) {
-    console.error(`fetchJpStockDatePrice failed for date: ${targetDateStr}`, e);
+    console.error(`fetchJpStockDatePrice failed for code: ${code}, date: ${targetDateStr}`, e);
   }
   return null;
 }
 
 /**
- * 日本株の「年初株価（年初大発会等最初営業日）」を取得する関数
+ * 統一カレンダー市場日付で株価指標を取得する
  */
-export async function fetchJpStockYearStartPrice(code: string): Promise<number | null> {
+export async function fetchJpStockFullProfile(
+  code: string,
+  adoptDateStr?: string,
+  refDates?: MarketReferenceDates
+): Promise<StockFullProfile | null> {
   if (!code) return null;
   const sym = formatSymbol(code);
-  
+
   try {
-    const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=ytd&interval=1d`;
-    const json = await fetchViaProxy(targetUrl);
+    const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=6mo&interval=1d&_t=${Date.now()}`;
+    const json = await fetchWithResilience(targetUrl, 2500);
     const result = json?.chart?.result?.[0];
     if (!result) return null;
-    
-    const quotes = result.indicators?.quote?.[0]?.close;
-    if (!quotes) return null;
-    
-    for (let i = 0; i < quotes.length; i++) {
-      if (quotes[i] !== null && quotes[i] !== undefined && !isNaN(quotes[i])) {
-        return Math.round(quotes[i] * 100) / 100;
+
+    const timestamps: number[] = result.timestamp || [];
+    const quotes: number[] = result.indicators?.quote?.[0]?.close || [];
+
+    const dateMap = new Map<string, number>();
+    const dateList: string[] = [];
+
+    for (let i = 0; i < timestamps.length; i++) {
+      const q = quotes[i];
+      if (q !== null && q !== undefined && !isNaN(q) && q > 0) {
+        const d = new Date(timestamps[i] * 1000);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const dateStr = `${yyyy}-${mm}-${dd}`;
+
+        dateMap.set(dateStr, Math.round(q * 100) / 100);
+        dateList.push(dateStr);
       }
     }
-  } catch (e) {
-    console.error("fetchJpStockYearStartPrice failed:", e);
-  }
-  return null;
-}
 
-/**
- * 最新株価、前日、5日前、20日前、年始、および任意の採用日（古くても可）の終値を全網羅で取得する
- */
-export async function fetchJpStockFullProfile(code: string, adoptDateStr?: string): Promise<StockFullProfile | null> {
-  if (!code) return null;
-  const sym = formatSymbol(code);
-  
-  try {
-    const targetUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=3mo&interval=1d`;
-    const json = await fetchViaProxy(targetUrl);
-    const result = json?.chart?.result?.[0];
-    if (!result) return null;
-    
-    const meta = result.meta;
-    const quotes = result.indicators?.quote?.[0]?.close;
-    
-    const validQuotes: number[] = [];
-    if (Array.isArray(quotes)) {
-      for (let i = 0; i < quotes.length; i++) {
-        const q = quotes[i];
-        if (q !== null && q !== undefined && !isNaN(q) && q > 0) {
-          validQuotes.push(q);
-        }
+    if (dateList.length === 0) return null;
+
+    const getPriceForDate = (targetDate?: string) => {
+      if (!targetDate) return dateMap.get(dateList[dateList.length - 1]) || 0;
+      if (dateMap.has(targetDate)) return dateMap.get(targetDate)!;
+      const available = dateList.filter(d => d <= targetDate);
+      if (available.length > 0) {
+        return dateMap.get(available[available.length - 1])!;
       }
-    }
-    
-    // 1. 最新営業日確定価格 (8/6大引け値など) の確定
-    let currentPrice = meta?.regularMarketPrice;
-    let isMetaValid = false;
+      return dateMap.get(dateList[dateList.length - 1]) || 0;
+    };
 
-    if (currentPrice && currentPrice > 0) {
-      isMetaValid = true;
-      currentPrice = Math.round(currentPrice * 100) / 100;
-    } else if (validQuotes.length > 0) {
-      currentPrice = Math.round(validQuotes[validQuotes.length - 1] * 100) / 100;
-    } else {
-      return null;
-    }
-
-    // 2. 前営業日確定終値 (8/5引け値など) の確定
+    let currentPrice = 0;
     let previousPrice = 0;
-    if (isMetaValid && validQuotes.length > 0) {
-      const lastQuote = Math.round(validQuotes[validQuotes.length - 1] * 100) / 100;
-      if (Math.abs(lastQuote - currentPrice) > 0.01) {
-        previousPrice = lastQuote;
-      } else if (validQuotes.length >= 2) {
-        previousPrice = Math.round(validQuotes[validQuotes.length - 2] * 100) / 100;
-      } else {
-        previousPrice = currentPrice;
-      }
-    } else if (validQuotes.length >= 2) {
-      previousPrice = Math.round(validQuotes[validQuotes.length - 2] * 100) / 100;
+    let price5DaysAgo = 0;
+    let price20DaysAgo = 0;
+    let priceYearStart = 0;
+
+    if (refDates) {
+      currentPrice = getPriceForDate(refDates.currentDate);
+      previousPrice = getPriceForDate(refDates.prev1Date);
+      price5DaysAgo = getPriceForDate(refDates.prev5Date);
+      price20DaysAgo = getPriceForDate(refDates.prev20Date);
+      priceYearStart = getPriceForDate(refDates.yearStartDate);
     } else {
-      previousPrice = currentPrice;
+      const n = dateList.length;
+      currentPrice = dateMap.get(dateList[n - 1])!;
+      previousPrice = n >= 2 ? dateMap.get(dateList[n - 2])! : currentPrice;
+      price5DaysAgo = n >= 6 ? dateMap.get(dateList[n - 6])! : previousPrice;
+      price20DaysAgo = n >= 21 ? dateMap.get(dateList[n - 21])! : previousPrice;
+      priceYearStart = dateMap.get(dateList[0])!;
     }
 
-    // 3. 5営業日前、20営業日前価格の確実な遡及算出
-    const offset = (isMetaValid && validQuotes.length > 0 && Math.abs(validQuotes[validQuotes.length - 1] - currentPrice) > 0.01) ? 1 : 0;
-    
-    const idx5 = validQuotes.length - 5 - offset;
-    const price5DaysAgo = idx5 >= 0 
-      ? Math.round(validQuotes[idx5] * 100) / 100 
-      : previousPrice;
-
-    const idx20 = validQuotes.length - 20 - offset;
-    const price20DaysAgo = idx20 >= 0 
-      ? Math.round(validQuotes[idx20] * 100) / 100 
-      : previousPrice;
-
-    // 年始価格
-    let priceYearStart = price20DaysAgo;
-    const ytdPrice = await fetchJpStockYearStartPrice(code);
-    if (ytdPrice !== null && ytdPrice > 0) {
-      priceYearStart = ytdPrice;
-    }
-
-    // 採用日価格
-    let adoptPrice = undefined;
+    let adoptPrice: number | undefined = undefined;
     if (adoptDateStr) {
-      const datePrice = await fetchJpStockDatePrice(code, adoptDateStr);
-      if (datePrice !== null && datePrice > 0) {
-        adoptPrice = datePrice;
+      try {
+        const cleanAdoptStr = adoptDateStr.replace(/\//g, '-');
+        const adoptLookup = dateList.filter(d => d <= cleanAdoptStr).pop();
+        if (adoptLookup) {
+          adoptPrice = dateMap.get(adoptLookup);
+        } else {
+          const datePrice = await fetchJpStockDatePrice(code, adoptDateStr);
+          if (datePrice !== null && datePrice > 0) {
+            adoptPrice = datePrice;
+          }
+        }
+      } catch (adoptErr) {
+        console.warn(`adoptPrice fetch warning for code: ${code}`, adoptErr);
       }
     }
 
-    // 時価総額 (億円) の取得
-    const marketCap = await fetchJpStockMarketCap(code);
+    const calcCap = calculateDynamicMarketCap(code, currentPrice);
+    const marketCap = calcCap > 0 ? calcCap : undefined;
 
     return {
       currentPrice,
@@ -233,7 +296,7 @@ export async function fetchJpStockFullProfile(code: string, adoptDateStr?: strin
       price20DaysAgo,
       priceYearStart,
       adoptPrice,
-      marketCap: marketCap || undefined
+      marketCap
     };
   } catch (e) {
     console.error(`fetchJpStockFullProfile failed for code: ${code}`, e);
@@ -241,48 +304,79 @@ export async function fetchJpStockFullProfile(code: string, adoptDateStr?: strin
   return null;
 }
 
-export async function fetchJpStockMarketCap(code: string): Promise<number | null> {
-  if (!code) return null;
-  const cleanCode = code.replace('.T', '').trim();
-  const targetUrl = `https://finance.yahoo.co.jp/quote/${cleanCode}.T`;
-  
-  try {
-    const rawText = await fetchViaProxy(targetUrl);
-    if (typeof rawText === 'string') {
-      const match = rawText.match(/時価総額[\s\S]*?_StyledNumber__value[^>]*?>([\d,]+)<\/span>/);
-      if (match && match[1]) {
-        const rawHyakuman = parseFloat(match[1].replace(/,/g, ''));
-        if (!isNaN(rawHyakuman) && rawHyakuman > 0) {
-          return Math.round(rawHyakuman / 100);
-        }
-      }
-    }
-  } catch (e) {
-    // ignore
-  }
-  return null;
-}
-
-export function GET_JP_STOCK_CAP_SIZE(code: string): "大型株" | "中型株" | "小型株" | "市場指標" {
-  if (!code) return "中型株";
+export function GET_JP_STOCK_CAP_SIZE(code: string): '大型株' | '中型株' | '小型株' | '市場指標' {
+  if (!code) return '中型株';
   const sym = formatSymbol(code);
-  if (sym === "^N225" || sym === "998405.T") return "市場指標";
+  if (sym === '^N225' || sym === '1306.T' || sym === '998405.T') return '市場指標';
 
-  const c = code.replace(".T", "").trim();
-
+  const c = code.replace('.T', '').trim();
   const largeCapSet: Record<string, boolean> = {
-    "1605": true, "1802": true, "1942": true, "4004": true, "4062": true,
-    "5802": true, "6146": true, "6269": true, "6525": true, "6728": true,
-    "6758": true, "6841": true, "6861": true, "6920": true, "7453": true,
-    "8306": true, "8766": true
+    '1605': true, '1802': true, '1942': true, '4004': true, '4062': true,
+    '5802': true, '6146': true, '6269': true, '6525': true, '6728': true,
+    '6758': true, '6841': true, '6861': true, '6920': true, '7453': true,
+    '8306': true, '8766': true
   };
 
   const smallCapSet: Record<string, boolean> = {
-    "4369": true
+    '4369': true
   };
 
-  if (largeCapSet[c]) return "大型株";
-  if (smallCapSet[c]) return "小型株";
+  if (largeCapSet[c]) return '大型株';
+  if (smallCapSet[c]) return '小型株';
 
-  return "中型株";
+  return '中型株';
+}
+
+export async function fetchMarketIndicesProfile(): Promise<{
+  nikkei: MarketIndexMetrics | null;
+  topix: MarketIndexMetrics | null;
+  refDates: MarketReferenceDates | null;
+}> {
+  try {
+    const targetUrlNikkei = `https://query1.finance.yahoo.com/v8/finance/chart/%5EN225?range=6mo&interval=1d&_t=${Date.now()}`;
+    const rawNikkei = await fetchWithResilience(targetUrlNikkei, 2500);
+    const nikkeiResult = rawNikkei?.chart?.result?.[0];
+    const refDates = getMarketReferenceDatesFromChart(nikkeiResult);
+
+    const [nikkeiProfile, topixProfile] = await Promise.all([
+      fetchJpStockFullProfile('^N225', undefined, refDates || undefined),
+      fetchJpStockFullProfile('1306.T', undefined, refDates || undefined)
+    ]);
+
+    const buildMetrics = (name: string, symbol: string, p: StockFullProfile | null): MarketIndexMetrics | null => {
+      if (!p || !p.currentPrice) return null;
+      const c = p.currentPrice;
+      const prev = p.previousPrice || c;
+      const p5 = p.price5DaysAgo || prev;
+      const p20 = p.price20DaysAgo || prev;
+      const pytd = p.priceYearStart || prev;
+
+      return {
+        name,
+        symbol,
+        currentPrice: c,
+        previousPrice: prev,
+        changePrevVal: Number((c - prev).toFixed(2)),
+        changePrevPct: prev > 0 ? Number((((c - prev) / prev) * 100).toFixed(2)) : 0,
+        price5DaysAgo: p5,
+        change5dVal: Number((c - p5).toFixed(2)),
+        change5dPct: p5 > 0 ? Number((((c - p5) / p5) * 100).toFixed(2)) : 0,
+        price20DaysAgo: p20,
+        change20dVal: Number((c - p20).toFixed(2)),
+        change20dPct: p20 > 0 ? Number((((c - p20) / p20) * 100).toFixed(2)) : 0,
+        priceYearStart: pytd,
+        changeYtdVal: Number((c - pytd).toFixed(2)),
+        changeYtdPct: pytd > 0 ? Number((((c - pytd) / pytd) * 100).toFixed(2)) : 0
+      };
+    };
+
+    return {
+      nikkei: buildMetrics('日経平均', '^N225', nikkeiProfile),
+      topix: buildMetrics('TOPIX', '1306.T', topixProfile),
+      refDates
+    };
+  } catch (e) {
+    console.error('fetchMarketIndicesProfile failed:', e);
+    return { nikkei: null, topix: null, refDates: null };
+  }
 }

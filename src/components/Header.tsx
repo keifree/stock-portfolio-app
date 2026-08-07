@@ -1,21 +1,15 @@
 import React from 'react';
 import { StockItem } from '../types';
-import { Plus, Download, Share2, Lock, Unlock, Database } from 'lucide-react';
+import { Lock, Unlock } from 'lucide-react';
 
 interface HeaderProps {
   stocks: StockItem[];
   isReadOnly?: boolean;
-  onOpenAddModal: () => void;
-  onOpenShareModal: () => void;
-  onExportJSON: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   stocks = [],
-  isReadOnly = false,
-  onOpenAddModal,
-  onOpenShareModal,
-  onExportJSON
+  isReadOnly = false
 }) => {
   const totalCount = (stocks || []).length;
   const positiveCount = (stocks || []).filter((s) => s.changePrevPct > 0).length;
@@ -48,9 +42,9 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
         </div>
 
-        {/* 統計サマリー ＆ 操作アクション */}
+        {/* 統計サマリー (値上がり・値下がり数) */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', gap: '12px', fontSize: '0.82rem', fontWeight: 700 }}>
+          <div style={{ display: 'flex', gap: '14px', fontSize: '0.88rem', fontWeight: 700 }}>
             <span style={{ color: 'var(--text-secondary)' }}>
               登録銘柄: <strong style={{ color: '#fff' }}>{totalCount}</strong> 件
             </span>
@@ -60,28 +54,6 @@ export const Header: React.FC<HeaderProps> = ({
             <span style={{ color: '#34d399' }}>
               値下がり: <strong>{negativeCount}</strong>
             </span>
-          </div>
-
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {/* 銘柄追加ボタン */}
-            {!isReadOnly && (
-              <button className="btn btn-primary" onClick={onOpenAddModal} style={{ padding: '6px 12px', fontSize: '0.82rem' }}>
-                <Plus size={15} />
-                <span>銘柄を追加</span>
-              </button>
-            )}
-
-            {/* JSON出力ボタン */}
-            <button className="btn btn-secondary" onClick={onExportJSON} style={{ padding: '6px 14px', fontSize: '0.82rem', borderColor: 'var(--accent-cyan)' }} title="バックアップ用JSON保存">
-              <Database size={15} style={{ color: 'var(--accent-cyan)' }} />
-              <span>📦 JSON保存</span>
-            </button>
-
-            {/* 共有設定ボタン */}
-            <button className="btn btn-secondary" onClick={onOpenShareModal} style={{ padding: '6px 14px', fontSize: '0.82rem' }} title="共有・自動同期設定">
-              <Share2 size={15} />
-              <span>共有設定</span>
-            </button>
           </div>
         </div>
       </div>

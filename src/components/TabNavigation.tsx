@@ -6,16 +6,20 @@ interface TabNavigationProps {
   tabs: TabConfig[];
   activeTabId: string;
   stocks: StockItem[];
+  isReadOnly?: boolean;
   onSelectTab: (tabId: string) => void;
   onAddTab: (name: string) => void;
+  onOpenAddModal?: () => void;
 }
 
 export const TabNavigation: React.FC<TabNavigationProps> = ({
   tabs,
   activeTabId,
   stocks,
+  isReadOnly = false,
   onSelectTab,
-  onAddTab
+  onAddTab,
+  onOpenAddModal
 }) => {
   const [isAdding, setIsAdding] = useState(false);
   const [newTabName, setNewTabName] = useState('');
@@ -30,8 +34,8 @@ export const TabNavigation: React.FC<TabNavigationProps> = ({
   };
 
   return (
-    <div className="tabs-container">
-      <div className="tabs-list">
+    <div className="tabs-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
+      <div className="tabs-list" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
         {tabs.map((tab) => {
           const count = stocks.filter((s) => s.tabId === tab.id).length;
           const isActive = tab.id === activeTabId;
@@ -72,16 +76,30 @@ export const TabNavigation: React.FC<TabNavigationProps> = ({
             </button>
           </form>
         ) : (
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() => setIsAdding(true)}
-            style={{ borderRadius: '20px', padding: '4px 10px', fontSize: '0.78rem' }}
-          >
-            <Plus size={14} />
-            <span>グループ追加</span>
-          </button>
+          !isReadOnly && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setIsAdding(true)}
+              style={{ borderRadius: '20px', padding: '4px 10px', fontSize: '0.78rem' }}
+            >
+              <Plus size={14} />
+              <span>グループ追加</span>
+            </button>
+          )
         )}
       </div>
+
+      {/* 銘柄追加ボタン (タブ行の右側に配置) */}
+      {!isReadOnly && onOpenAddModal && (
+        <button
+          className="btn btn-primary"
+          onClick={onOpenAddModal}
+          style={{ padding: '6px 14px', fontSize: '0.82rem', borderRadius: '20px', display: 'flex', alignItems: 'center', gap: '6px' }}
+        >
+          <Plus size={15} />
+          <span>銘柄を追加</span>
+        </button>
+      )}
     </div>
   );
 };

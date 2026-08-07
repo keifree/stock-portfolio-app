@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { StockItem, TabConfig, SyncSettings } from './types';
-import { getAutoTseJapaneseInfo, applyJapaneseNamesToAllStocks } from './services/tseMaster';
+import { applyJapaneseNamesToAllStocks } from './services/tseMaster';
 import {
   initializeDefaultData,
   saveStocks,
@@ -19,10 +19,22 @@ import { StockTable } from './components/StockTable';
 import { AddStockModal } from './components/AddStockModal';
 import { StockDetailModal } from './components/StockDetailModal';
 import { ShareConfigModal } from './components/ShareConfigModal';
-import { fetchJpStockFullProfile } from './services/yahooFinance';
+import { DebugModal } from './components/DebugModal';
+import { MarketOverviewTiles } from './components/MarketOverviewTiles';
+import { Footer } from './components/Footer';
+import { fetchJpStockFullProfile, fetchMarketIndicesProfile, MarketIndexMetrics, MarketReferenceDates } from './services/yahooFinance';
 import { Lock } from 'lucide-react';
 
-// 指定ミリ秒待機するスリープ関数
+const isSameStockCode = (codeA: string, codeB: string): boolean => {
+  if (!codeA || !codeB) return false;
+  const cleanA = codeA.trim().toUpperCase().replace(/\.T$/i, '');
+  const cleanB = codeB.trim().toUpperCase().replace(/\.T$/i, '');
+  const mA = cleanA.match(/(\d{4})/);
+  const mB = cleanB.match(/(\d{4})/);
+  if (mA && mB) return mA[1] === mB[1];
+  return cleanA === cleanB;
+};
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const App: React.FC = () => {
@@ -32,12 +44,18 @@ export const App: React.FC = () => {
   const [settings, setSettings] = useState<SyncSettings>({ autoSync: false, syncIntervalMinutes: 5, apiEndpoint: '' });
   const [loading, setLoading] = useState<boolean>(true);
 
+  const [marketIndices, setMarketIndices] = useState<{ nikkei: MarketIndexMetrics | null; topix: MarketIndexMetrics | null }>({
+    nikkei: null,
+    topix: null
+  });
+  const [marketRefDates, setMarketRefDates] = useState<MarketReferenceDates | null>(null);
+
   const [isReadOnly, setIsReadOnly] = useState<boolean>(false);
-  const [isLinkExpired, setIsLinkExpired] = useState<boolean>(false); // 共有リンクの有効期限切れ状態
-  const [copiedType, setCopiedType] = useState<string | null>(null);
+  const [isLinkExpired, setIsLinkExpired] = useState<boolean>(false);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState<boolean>(false);
+  const [isDebugModalOpen, setIsDebugModalOpen] = useState<boolean>(false);
   const [selectedStock, setSelectedStock] = useState<StockItem | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -45,31 +63,8 @@ export const App: React.FC = () => {
   const baseUrl = typeof window !== 'undefined' ? window.location.origin + window.location.pathname : '';
   const editorUrl = baseUrl;
 
-  // 当月のキーを動的生成 (共有URL用)
-  const today = new Date();
-  const yyyy = today.getFullYear();
-  const mm = String(today.getMonth() + 1).padStart(2, '0');
-  const currentKey = btoa(`stock-${yyyy}-${mm}`).substring(0, 8);
-  const readonlyUrl = `${baseUrl}?mode=readonly&key=${currentKey}`;
-
-  const copyUrl = (url: string, type: 'readonly' | 'editor') => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(url);
-      setCopiedType(type);
-      setTimeout(() => setCopiedType(null), 2500);
-    }
-  };
-
-  const handleResetData = () => {
-    try {
-      localStorage.removeItem('stock_portfolio_tabs_v2');
-      localStorage.removeItem('stock_portfolio_settings_v2');
-      localStorage.removeItem('stock_portfolio_backup_snapshot');
-      window.location.href = window.location.origin + window.location.pathname;
-    } catch (e) {
-      // ignore
-    }
-  };
+  const isSyncingRef = useRef<boolean>(false);
+  const [syncProgress, setSyncProgress] = useState<{ current: number; total: number } | null>(null);
 
   const handleFileImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -87,7 +82,7 @@ export const App: React.FC = () => {
         if (res.tabs && res.tabs.length > 0) {
           setTabs(res.tabs);
         }
-        alert(`【読み込み成功】\nJSONファイルから銘柄データ [ ${res.count}件 ] をインポート復元しました。\nこれからバックグラウンドで時間を分散させて本物の株価と同期します。`);
+        alert(`【読み込み成功】\nJSONファイルから銘柄データ [ ${res.count}件 ] をインポート復元しました。\nバックグラウンドで時間を分散させて本物の株価と同期します。`);
         await updateAllStocksRealDataSequentially(res.stocks);
       } else {
         alert('JSONファイルの読み込みに失敗しました。正しいフォーマットのファイルかご確認ください。');
@@ -99,6 +94,89 @@ export const App: React.FC = () => {
     };
     reader.readAsText(file, 'UTF-8');
   };
+
+  /**
+   * 4銘柄並列バッチ処理による実株価同期関数
+   */
+  const updateAllStocksRealDataSequentially = useCallback(async (
+    targetsToUpdate: StockItem[],
+    customRefDates?: MarketReferenceDates
+  ) => {
+    if (!targetsToUpdate || targetsToUpdate.length === 0) return;
+    if (isSyncingRef.current) return;
+
+    isSyncingRef.current = true;
+    setSyncProgress({ current: 0, total: targetsToUpdate.length });
+
+    const refDatesToUse = customRefDates || marketRefDates || undefined;
+
+    try {
+      const batchSize = 4;
+      for (let i = 0; i < targetsToUpdate.length; i += batchSize) {
+        const batch = targetsToUpdate.slice(i, i + batchSize);
+
+        const results = await Promise.allSettled(
+          batch.map(async (stock) => {
+            const real = await fetchJpStockFullProfile(stock.code, stock.adoptDate, refDatesToUse);
+            return { stock, real };
+          })
+        );
+
+        setStocks((prevStocks) => {
+          let updated = [...prevStocks];
+          for (const res of results) {
+            if (res.status === 'fulfilled' && res.value.real && res.value.real.currentPrice > 5) {
+              const { stock, real } = res.value;
+              const changePrevPct = Number((((real.currentPrice - real.previousPrice) / real.previousPrice) * 100).toFixed(2));
+              const change5dPct = Number((((real.currentPrice - real.price5DaysAgo) / real.price5DaysAgo) * 100).toFixed(2));
+              const change20dPct = Number((((real.currentPrice - real.price20DaysAgo) / real.price20DaysAgo) * 100).toFixed(2));
+              const changeYtdPct = Number((((real.currentPrice - real.priceYearStart) / real.priceYearStart) * 100).toFixed(2));
+
+              const adoptPrice = real.adoptPrice || stock.adoptPrice || real.currentPrice;
+              const changeAdoptPct = adoptPrice > 0 ? Number((((real.currentPrice - adoptPrice) / adoptPrice) * 100).toFixed(2)) : 0;
+
+              updated = updated.map((s) => {
+                if (isSameStockCode(s.code, stock.code)) {
+                  const capToUse = (real.marketCap && real.marketCap > 0) ? real.marketCap : (s.marketCap || 0);
+                  const scaleToUse: '大型' | '中型' | '小型' = capToUse >= 5000 ? '大型' : (capToUse > 0 && capToUse <= 1000) ? '小型' : '中型';
+
+                  return {
+                    ...s,
+                    currentPrice: real.currentPrice,
+                    previousPrice: real.previousPrice,
+                    changePrevPct,
+                    price5DaysAgo: real.price5DaysAgo,
+                    change5dPct,
+                    price20DaysAgo: real.price20DaysAgo,
+                    change20dPct,
+                    priceYearStart: real.priceYearStart,
+                    changeYtdPct,
+                    adoptPrice,
+                    changeAdoptPct,
+                    marketCap: capToUse > 0 ? capToUse : s.marketCap,
+                    scale: scaleToUse
+                  };
+                }
+                return s;
+              });
+            }
+          }
+          saveStocks(updated);
+          return updated;
+        });
+
+        const nextCount = Math.min(i + batchSize, targetsToUpdate.length);
+        setSyncProgress({ current: nextCount, total: targetsToUpdate.length });
+
+        await sleep(50);
+      }
+    } catch (err) {
+      console.error('Batch sync failed:', err);
+    } finally {
+      isSyncingRef.current = false;
+      setSyncProgress(null);
+    }
+  }, [marketRefDates]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -115,23 +193,21 @@ export const App: React.FC = () => {
         const mode = params.get('mode');
         const role = params.get('role');
         const isRead = mode === 'readonly' || role === 'viewer' || mode === 'view' || params.has('readonly');
-        
+
         if (isRead) {
           setIsReadOnly(true);
-          
-          // 当月の検証トークンキーと比較
           const keyParam = params.get('key');
           const t = new Date();
           const y = t.getFullYear();
           const m = String(t.getMonth() + 1).padStart(2, '0');
           const expectedKey = btoa(`stock-${y}-${m}`).substring(0, 8);
-          
+
           if (keyParam !== expectedKey) {
             setIsLinkExpired(true);
           }
         }
       } catch (e) {
-        // ignore
+        console.error('URL params parse warning:', e);
       }
     }
 
@@ -165,13 +241,11 @@ export const App: React.FC = () => {
         let safeStocks = Array.isArray(loadedStocks) ? loadedStocks : [];
         const safeTabs = Array.isArray(loadedTabs) && loadedTabs.length > 0 ? loadedTabs : DEFAULT_TABS;
 
-        // 東証全4,000銘柄マスタによる自動日本語化・セクター補正・時価総額補正
         const { updatedStocks: jpCleanedStocks, changedCount } = applyJapaneseNamesToAllStocks(safeStocks);
         if (changedCount > 0) {
           safeStocks = jpCleanedStocks;
         }
 
-        // 既存データの中にある明らかな異常値を自動クレンジング
         safeStocks = safeStocks.map((s) => {
           const cleanPrice = (val: number) => (val === 90 || val < 1.0) ? 0 : val;
           return {
@@ -188,7 +262,13 @@ export const App: React.FC = () => {
         saveStocks(safeStocks);
         setTabs(safeTabs);
 
-        updateAllStocksRealDataSequentially(safeStocks);
+        const indicesRes = await fetchMarketIndicesProfile();
+        setMarketIndices({ nikkei: indicesRes.nikkei, topix: indicesRes.topix });
+        if (indicesRes.refDates) {
+          setMarketRefDates(indicesRes.refDates);
+        }
+
+        updateAllStocksRealDataSequentially(safeStocks, indicesRes.refDates || undefined);
       } catch (err) {
         console.error('Failed to initialize stock app data:', err);
       } finally {
@@ -196,68 +276,26 @@ export const App: React.FC = () => {
       }
     }
     load();
-  }, []);
+  }, [updateAllStocksRealDataSequentially]);
 
-  /**
-   * クローラー制限（アクセスブロック）を回避するため、
-   * GASの知恵と同様にウェイト(Sleep)を挟みながら、1銘柄ずつ順次同期処理を行う関数
-   */
-  const updateAllStocksRealDataSequentially = async (targetsToUpdate: StockItem[]) => {
-    if (!targetsToUpdate || targetsToUpdate.length === 0) return;
-    
-    for (let i = 0; i < targetsToUpdate.length; i++) {
-      const stock = targetsToUpdate[i];
-      
-      // GASの知恵: 連続アクセスを避けるため、リクエスト間に 150ms〜350ms のランダムスリープを挿入
-      const randomWait = Math.floor(Math.random() * 200) + 150;
-      await sleep(randomWait);
-      
-      try {
-        const real = await fetchJpStockFullProfile(stock.code, stock.adoptDate);
-        if (real && real.currentPrice > 5) { // 異常値ガード
-          
-          const changePrevPct = Number((((real.currentPrice - real.previousPrice) / real.previousPrice) * 100).toFixed(2));
-          const change5dPct = Number((((real.currentPrice - real.price5DaysAgo) / real.price5DaysAgo) * 100).toFixed(2));
-          const change20dPct = Number((((real.currentPrice - real.price20DaysAgo) / real.price20DaysAgo) * 100).toFixed(2));
-          const changeYtdPct = Number((((real.currentPrice - real.priceYearStart) / real.priceYearStart) * 100).toFixed(2));
-
-          const adoptPrice = real.adoptPrice || stock.adoptPrice || real.currentPrice;
-          const changeAdoptPct = adoptPrice > 0 ? Number((((real.currentPrice - adoptPrice) / adoptPrice) * 100).toFixed(2)) : 0;
-
-          // バグ修正箇所：引数で渡されたリストだけでなく、「アプリ全体の全銘柄の状態」を安全に部分更新
-          setStocks((prevStocks) => {
-            const updated = prevStocks.map((s) => {
-              if (s.code === stock.code) {
-                const capToUse = (real.marketCap && real.marketCap > 0) ? real.marketCap : (s.marketCap || 0);
-                const scaleToUse: '大型' | '中型' | '小型' = capToUse >= 5000 ? '大型' : (capToUse > 0 && capToUse <= 1000) ? '小型' : '中型';
-
-                return {
-                  ...s,
-                  currentPrice: real.currentPrice,
-                  previousPrice: real.previousPrice,
-                  changePrevPct,
-                  price5DaysAgo: real.price5DaysAgo,
-                  change5dPct,
-                  price20DaysAgo: real.price20DaysAgo,
-                  change20dPct,
-                  priceYearStart: real.priceYearStart,
-                  changeYtdPct,
-                  adoptPrice,
-                  changeAdoptPct,
-                  marketCap: capToUse > 0 ? capToUse : s.marketCap,
-                  scale: scaleToUse
-                };
-              }
-              return s;
-            });
-            saveStocks(updated); // ローカルストレージにもアプリ全体データを保存
-            return updated;
-          });
-        }
-      } catch (err) {
-        console.error(`Sequencing fetch failed for stock: ${stock.code}`, err);
-      }
+  const handleForceRefreshAll = async () => {
+    if (isSyncingRef.current) return;
+    const indicesRes = await fetchMarketIndicesProfile();
+    setMarketIndices({ nikkei: indicesRes.nikkei, topix: indicesRes.topix });
+    if (indicesRes.refDates) {
+      setMarketRefDates(indicesRes.refDates);
     }
+    await updateAllStocksRealDataSequentially(stocks, indicesRes.refDates || undefined);
+  };
+
+  const handleForceWipeAndRefresh = async () => {
+    isSyncingRef.current = false;
+    const indicesRes = await fetchMarketIndicesProfile();
+    setMarketIndices({ nikkei: indicesRes.nikkei, topix: indicesRes.topix });
+    if (indicesRes.refDates) {
+      setMarketRefDates(indicesRes.refDates);
+    }
+    await updateAllStocksRealDataSequentially(stocks, indicesRes.refDates || undefined);
   };
 
   const handleAddStock = (newStock: StockItem) => {
@@ -265,7 +303,6 @@ export const App: React.FC = () => {
     const updated = [{ ...newStock, tabId: activeTabId }, ...stocks];
     setStocks(updated);
     saveStocks(updated);
-    // 新規登録したその1銘柄だけを、既存の他の銘柄を破壊せずにバックグラウンドで安全同期
     updateAllStocksRealDataSequentially([{ ...newStock, tabId: activeTabId }]);
   };
 
@@ -330,7 +367,6 @@ export const App: React.FC = () => {
 
   return (
     <div className="app-container">
-      {/* 非表示のファイル入力欄のみDOM上に保持 */}
       <input
         type="file"
         ref={fileInputRef}
@@ -339,7 +375,6 @@ export const App: React.FC = () => {
         style={{ display: 'none' }}
       />
 
-      {/* 閲覧専用モード警告バー */}
       {isReadOnly && (
         <div
           style={{
@@ -382,10 +417,35 @@ export const App: React.FC = () => {
       <Header
         stocks={stocks || []}
         isReadOnly={isReadOnly}
-        onOpenAddModal={() => setIsAddModalOpen(true)}
-        onOpenShareModal={() => setIsShareModalOpen(true)}
-        onExportJSON={() => exportDataAsJSON(stocks || [], tabs || [])}
       />
+
+      {/* 同期中リアルタイムプログレスバー */}
+      {syncProgress && (
+        <div
+          style={{
+            background: 'rgba(56, 189, 248, 0.15)',
+            border: '1px solid var(--accent-cyan)',
+            color: '#fff',
+            padding: '10px 20px',
+            borderRadius: '10px',
+            marginBottom: '16px',
+            fontSize: '0.88rem',
+            fontWeight: 800,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            boxShadow: '0 4px 20px rgba(56, 189, 248, 0.25)'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span className="animate-spin" style={{ display: 'inline-block', fontSize: '1.1rem' }}>🔄</span>
+            <span>【最新株価同期中】 キャッシュを自動クリアし、全銘柄の株価データを最新に再取得しています... ({syncProgress.current} / {syncProgress.total} 銘柄)</span>
+          </div>
+          <div style={{ fontSize: '0.82rem', color: 'var(--accent-cyan)', fontWeight: 900 }}>
+            {Math.round((syncProgress.current / syncProgress.total) * 100)}% 完了
+          </div>
+        </div>
+      )}
 
       {/* メインコンテンツエリア */}
       <main className="main-content">
@@ -393,6 +453,7 @@ export const App: React.FC = () => {
           tabs={tabs || DEFAULT_TABS}
           activeTabId={activeTabId}
           stocks={stocks || []}
+          isReadOnly={isReadOnly}
           onSelectTab={setActiveTabId}
           onAddTab={(name) => {
             if (isReadOnly) return;
@@ -402,6 +463,7 @@ export const App: React.FC = () => {
             saveTabs(updatedTabs);
             setActiveTabId(newTab.id);
           }}
+          onOpenAddModal={() => setIsAddModalOpen(true)}
         />
 
         {loading ? (
@@ -419,6 +481,23 @@ export const App: React.FC = () => {
             onUpdateStock={handleUpdateStock}
           />
         )}
+
+        {/* 市場比較タイル (日経平均・TOPIX・30銘柄平均) をフッター直上に配置 */}
+        <MarketOverviewTiles
+          nikkei={marketIndices.nikkei}
+          topix={marketIndices.topix}
+          stocks={stocks || []}
+        />
+
+        {/* フッター */}
+        <Footer
+          isReadOnly={isReadOnly}
+          isSyncing={!!syncProgress}
+          onOpenShareModal={() => setIsShareModalOpen(true)}
+          onExportJSON={() => exportDataAsJSON(stocks || [], tabs || [])}
+          onRefreshAllStocks={handleForceRefreshAll}
+          onOpenDebugModal={() => setIsDebugModalOpen(true)}
+        />
       </main>
 
       {/* モーダル群 */}
@@ -455,6 +534,14 @@ export const App: React.FC = () => {
           onImportJSONClick={() => fileInputRef.current?.click()}
         />
       )}
+
+      <DebugModal
+        isOpen={isDebugModalOpen}
+        stocks={stocks || []}
+        refDates={marketRefDates}
+        onClose={() => setIsDebugModalOpen(false)}
+        onForceWipeAndRefresh={handleForceWipeAndRefresh}
+      />
     </div>
   );
 };

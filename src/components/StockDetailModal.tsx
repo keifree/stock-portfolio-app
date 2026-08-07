@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { StockItem, FinancialQuarterNote, IRComment, FeatureNote } from '../types';
+import { StockItem, FinancialQuarterNote, FeatureNote, DistributionComment } from '../types';
 import { getAutoTseJapaneseInfo } from '../services/tseMaster';
 import { FinancialNotes } from './FinancialNotes';
 import { FeatureNotes } from './FeatureNotes';
-import { X, FileText, MessageSquare, BookOpen, Lock } from 'lucide-react';
+import { DistributionComments } from './DistributionComments';
+import { X, FileText, MessageSquare, BookOpen, Send, Calendar, Search } from 'lucide-react';
 
 interface StockDetailModalProps {
   stock: StockItem;
@@ -18,7 +19,11 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
   onClose,
   onUpdateStock
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'financial' | 'logs' | 'features'>('financial');
+  const [activeSubTab, setActiveSubTab] = useState<'financial' | 'logs' | 'features' | 'distribution'>('financial');
+
+  // ログ用フィルター・検索ステート
+  const [logSelectedYear, setLogSelectedYear] = useState<string>('ALL');
+  const [logSearchQuery, setLogSearchQuery] = useState<string>('');
 
   const handleUpdateFinancialNotes = (notes: FinancialQuarterNote[]) => {
     if (isReadOnly) return;
@@ -35,6 +40,16 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
     const updated = {
       ...stock,
       featureNotes: notes,
+      updatedAt: new Date().toISOString()
+    };
+    onUpdateStock(updated);
+  };
+
+  const handleUpdateDistributionComments = (comments: DistributionComment[]) => {
+    if (isReadOnly) return;
+    const updated = {
+      ...stock,
+      distributionComments: comments,
       updatedAt: new Date().toISOString()
     };
     onUpdateStock(updated);
@@ -77,6 +92,152 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
             points={svgPoints.join(' ')}
           />
         </svg>
+      </div>
+    );
+  };
+
+  const renderLogsTab = () => {
+    const rawLogs = stock.irComments || [];
+    const logAvailableYears = Array.from(
+      new Set(
+        rawLogs
+          .map((l) => {
+            const match = (l.date || '').match(/^(\d{4})/);
+            return match ? match[1] : null;
+          })
+          .filter((y): y is string => y !== null)
+      )
+    ).sort((a, b) => b.localeCompare(a));
+
+    const filteredLogs = rawLogs.filter((l) => {
+      const d = l.date || '';
+      if (logSelectedYear !== 'ALL' && !d.startsWith(logSelectedYear)) return false;
+      if (logSearchQuery.trim()) {
+        const q = logSearchQuery.trim().toLowerCase();
+        const t = (l.title || '').toLowerCase();
+        const c = (l.content || '').toLowerCase();
+        const a = (l.author || '').toLowerCase();
+        if (!t.includes(q) && !c.includes(q) && !a.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const sortedLogs = [...filteredLogs].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+    return (
+      <div className="glass-card" style={{ padding: '20px', background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '16px' }}>
+          <h3 style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--accent-cyan)', margin: 0 }}>
+            各種ログ一覧 ({rawLogs.length}件)
+          </h3>
+        </div>
+
+        {/* フィルター・検索コントロールバー */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            flexWrap: 'wrap',
+            marginBottom: '16px',
+            background: 'rgba(0, 0, 0, 0.25)',
+            padding: '10px 14px',
+            borderRadius: '10px',
+            border: '1px solid rgba(255, 255, 255, 0.08)'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', flex: 1 }}>
+            {/* 年数絞り込み */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Calendar size={14} style={{ color: 'var(--accent-cyan)' }} />
+              <select
+                className="input-field"
+                value={logSelectedYear}
+                onChange={(e) => setLogSelectedYear(e.target.value)}
+                style={{ padding: '5px 10px', fontSize: '0.82rem' }}
+              >
+                <option value="ALL">📅 すべての年 ({rawLogs.length}件)</option>
+                {logAvailableYears.map((yr) => (
+                  <option key={yr} value={yr}>
+                    {yr}年
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* キーワード検索 */}
+            <div style={{ position: 'relative', flex: 1, minWidth: '180px' }}>
+              <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+              <input
+                type="text"
+                className="input-field"
+                placeholder="ログ内容で検索..."
+                value={logSearchQuery}
+                onChange={(e) => setLogSearchQuery(e.target.value)}
+                style={{ paddingLeft: '30px', paddingRight: logSearchQuery ? '26px' : '10px', fontSize: '0.82rem', width: '100%' }}
+              />
+              {logSearchQuery && (
+                <button
+                  onClick={() => setLogSearchQuery('')}
+                  style={{
+                    position: 'absolute',
+                    right: '8px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem'
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* ヒット件数 ＆ クリアボタン */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+            <span>
+              表示: <strong style={{ color: '#fff' }}>{sortedLogs.length}</strong> / {rawLogs.length} 件
+            </span>
+            {(logSelectedYear !== 'ALL' || logSearchQuery) && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  setLogSelectedYear('ALL');
+                  setLogSearchQuery('');
+                }}
+                style={{ padding: '2px 8px', fontSize: '0.75rem', borderRadius: '4px' }}
+              >
+                クリア
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {sortedLogs.length === 0 ? (
+            <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)' }}>
+              条件に一致するログは見つかりませんでした。
+            </div>
+          ) : (
+            sortedLogs.map((log) => (
+              <div key={log.id} style={{ padding: '12px', borderBottom: '1px solid rgba(255, 255, 255, 0.05)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', gap: '8px', fontSize: '0.75rem', color: 'var(--text-muted)', alignItems: 'center' }}>
+                  <span style={{ color: '#fff', fontWeight: 700 }}>{log.date}</span>
+                  <span style={{ background: 'rgba(56, 189, 248, 0.15)', color: 'var(--accent-cyan)', padding: '1px 5px', borderRadius: '3px', fontWeight: 700 }}>{log.title}</span>
+                  <span>記録者: {log.author || 'システム'}</span>
+                </div>
+                <p style={{ fontSize: '0.85rem', color: '#e2e8f0', margin: 0, whiteSpace: 'pre-wrap' }}>
+                  {log.content}
+                </p>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     );
   };
@@ -161,6 +322,13 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
               <span>決算・IRコメント ({stock.financialNotes?.length || 0})</span>
             </button>
             <button
+              className={`btn ${activeSubTab === 'distribution' ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setActiveSubTab('distribution')}
+            >
+              <Send size={15} />
+              <span>配信コメント ({(stock.distributionComments || []).length})</span>
+            </button>
+            <button
               className={`btn ${activeSubTab === 'logs' ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setActiveSubTab('logs')}
             >
@@ -185,34 +353,15 @@ export const StockDetailModal: React.FC<StockDetailModalProps> = ({
             />
           )}
 
-          {activeSubTab === 'logs' && (
-            <div className="glass-card" style={{ padding: '20px', background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
-              <h3 style={{ fontSize: '1.05rem', fontWeight: 700, marginBottom: '16px', color: 'var(--accent-cyan)' }}>各種ログ一覧 ({stock.irComments?.length || 0}件)</h3>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {(stock.irComments || []).length === 0 ? (
-                  <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)' }}>
-                    現在記録されている移動・採用履歴ログはありません。
-                  </div>
-                ) : (
-                  [...(stock.irComments || [])]
-                    .sort((a, b) => b.date.localeCompare(a.date)) // 日付の新しい順
-                    .map((log) => (
-                      <div key={log.id} style={{ padding: '12px', borderBottom: '1px solid rgba(255, 255, 255, 0.05)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <div style={{ display: 'flex', gap: '8px', fontSize: '0.75rem', color: 'var(--text-muted)', alignItems: 'center' }}>
-                          <span style={{ color: '#fff', fontWeight: 700 }}>{log.date}</span>
-                          <span style={{ background: 'rgba(56, 189, 248, 0.15)', color: 'var(--accent-cyan)', padding: '1px 5px', borderRadius: '3px', fontWeight: 700 }}>{log.title}</span>
-                          <span>記録者: {log.author || 'システム'}</span>
-                        </div>
-                        <p style={{ fontSize: '0.85rem', color: '#e2e8f0', margin: 0, whiteSpace: 'pre-wrap' }}>
-                          {log.content}
-                        </p>
-                      </div>
-                    ))
-                )}
-              </div>
-            </div>
+          {activeSubTab === 'distribution' && (
+            <DistributionComments
+              comments={stock.distributionComments || []}
+              onUpdateComments={handleUpdateDistributionComments}
+              isReadOnly={isReadOnly}
+            />
           )}
+
+          {activeSubTab === 'logs' && renderLogsTab()}
 
           {activeSubTab === 'features' && (
             <FeatureNotes 

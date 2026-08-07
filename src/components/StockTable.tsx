@@ -1,16 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { StockItem, TabConfig } from '../types';
-import { getAutoTseJapaneseInfo, calculateDynamicMarketCap } from '../services/tseMaster';
-import { formatMarketCap, saveStocks } from '../services/storage';
+import { getAutoTseJapaneseInfo } from '../services/tseMaster';
+import { formatMarketCap } from '../services/storage';
 import { fetchJpStockDatePrice } from '../services/yahooFinance';
-import {
-  ArrowUpDown,
-  Trash2,
-  FileText,
-  Calendar,
-  Check,
-  X
-} from 'lucide-react';
+import { ArrowUpDown, Trash2, Calendar, Check, X } from 'lucide-react';
 
 interface StockTableProps {
   stocks: StockItem[];
@@ -18,10 +11,10 @@ interface StockTableProps {
   isReadOnly?: boolean;
   onSelectStock: (stock: StockItem) => void;
   onDeleteStock: (stockId: string) => void;
-  onUpdateStock: (stock: StockItem) => void; // 銘柄更新用コールバックを追加
+  onUpdateStock: (stock: StockItem) => void;
 }
 
-type SortField = 
+type SortField =
   | 'code'
   | 'name'
   | 'currentPrice'
@@ -33,13 +26,12 @@ type SortField =
   | 'marketCap';
 
 /**
- * ユーザー入力の年月日テキスト（例: 25/01/04, 25-01-04, 250104等）を標準日付（YYYY-MM-DD）に自動解釈するパーサー
+ * ユーザー入力日付を標準日付（YYYY-MM-DD）に解釈するパーサー
  */
 function parseYYMMDDToDateStr(input: string): string | null {
   if (!input) return null;
   const clean = input.replace(/[\/\-\s]/g, '').trim();
 
-  // 1. YYMMDD (6桁の連続した数字) の場合
   if (/^\d{6}$/.test(clean)) {
     const yy = clean.substring(0, 2);
     const mm = clean.substring(2, 4);
@@ -47,12 +39,11 @@ function parseYYMMDDToDateStr(input: string): string | null {
     return `20${yy}-${mm}-${dd}`;
   }
 
-  // 2. スラッシュやハイフン区切りの場合 (YY/MM/DD や YYYY/MM/DD)
   const parts = input.split(/[\/\-]/);
   if (parts.length === 3) {
     let yy = parts[0].trim();
-    let mm = parts[1].trim().padStart(2, '0');
-    let dd = parts[2].trim().padStart(2, '0');
+    const mm = parts[1].trim().padStart(2, '0');
+    const dd = parts[2].trim().padStart(2, '0');
 
     if (yy.length === 2) {
       yy = `20${yy}`;
@@ -60,7 +51,6 @@ function parseYYMMDDToDateStr(input: string): string | null {
     return `${yy}-${mm}-${dd}`;
   }
 
-  // 3. すでに標準形式 YYYY-MM-DD の場合
   if (/^\d{4}-\d{2}-\d{2}$/.test(input)) {
     return input;
   }
@@ -69,7 +59,7 @@ function parseYYMMDDToDateStr(input: string): string | null {
 }
 
 /**
- * 西暦4桁(YYYY-MM-DD)を表示用の西暦下2桁(YY/MM/DD)に変換するフォーマッター
+ * 表示用の西暦下2桁(YY/MM/DD)フォーマッター
  */
 const formatYYMMDD = (dateStr: string) => {
   if (!dateStr) return '24/08/01';
@@ -95,59 +85,63 @@ export const StockTable: React.FC<StockTableProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [sortField, setSortField] = useState<SortField>('code');
   const [sortAsc, setSortAsc] = useState<boolean>(true);
-  const [localStocks, setLocalStocks] = useState<StockItem[]>(stocks);
 
   // 採用日個別編集用
   const [editingAdoptId, setEditingAdoptId] = useState<string | null>(null);
   const [editingAdoptDate, setEditingAdoptDate] = useState<string>('');
 
-  React.useEffect(() => {
-    setLocalStocks(stocks);
-  }, [stocks]);
-
-  const filteredStocks = localStocks.filter((stock) => {
-    const autoTse = getAutoTseJapaneseInfo(stock.code, stock.name);
-    const displayStockName = autoTse.name;
-    const displaySector = autoTse.sector || stock.sector;
-
+  // フィルタリング処理のメモ化
+  const filteredStocks = useMemo(() => {
     const term = searchTerm.toLowerCase().trim();
-    if (!term) return true;
+    if (!term) return stocks || [];
 
-    return (
-      stock.code.toLowerCase().includes(term) ||
-      displayStockName.toLowerCase().includes(term) ||
-      displaySector.toLowerCase().includes(term)
-    );
-  });
+    return (stocks || []).filter((stock) => {
+      const autoTse = getAutoTseJapaneseInfo(stock.code, stock.name);
+      const displayStockName = autoTse.name;
+      const displaySector = autoTse.sector || stock.sector;
 
-  const sortedStocks = [...filteredStocks].sort((a, b) => {
-    let valA = a[sortField];
-    let valB = b[sortField];
+      return (
+        stock.code.toLowerCase().includes(term) ||
+        displayStockName.toLowerCase().includes(term) ||
+        displaySector.toLowerCase().includes(term)
+      );
+    });
+  }, [stocks, searchTerm]);
 
-    if (sortField === 'code') {
-      const codeA = parseInt(a.code, 10) || 0;
-      const codeB = parseInt(b.code, 10) || 0;
-      return sortAsc ? codeA - codeB : codeB - codeA;
-    }
+  // ソート処理のメモ化
+  const sortedStocks = useMemo(() => {
+    return [...filteredStocks].sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
 
-    if (typeof valA === 'string') {
-      valA = (valA as string).toLowerCase();
-      valB = (valB as string).toLowerCase();
-    }
+      if (sortField === 'code') {
+        const codeA = parseInt(a.code, 10) || 0;
+        const codeB = parseInt(b.code, 10) || 0;
+        return sortAsc ? codeA - codeB : codeB - codeA;
+      }
 
-    if (valA! < valB!) return sortAsc ? -1 : 1;
-    if (valA! > valB!) return sortAsc ? 1 : -1;
-    return 0;
-  });
+      if (typeof valA === 'string') {
+        valA = (valA as string).toLowerCase();
+        valB = (valB as string).toLowerCase();
+      }
 
-  const handleSort = (field: SortField) => {
-    if (sortField === field) {
-      setSortAsc(!sortAsc);
-    } else {
-      setSortField(field);
-      setSortAsc(field === 'code' ? true : false);
-    }
-  };
+      if (valA! < valB!) return sortAsc ? -1 : 1;
+      if (valA! > valB!) return sortAsc ? 1 : -1;
+      return 0;
+    });
+  }, [filteredStocks, sortField, sortAsc]);
+
+  const handleSort = useCallback((field: SortField) => {
+    setSortField((prevField) => {
+      if (prevField === field) {
+        setSortAsc((prevAsc) => !prevAsc);
+        return field;
+      } else {
+        setSortAsc(field === 'code');
+        return field;
+      }
+    });
+  }, []);
 
   const renderChangeText = (pct: number, price: number) => {
     if (!price || price <= 0) {
@@ -167,7 +161,7 @@ export const StockTable: React.FC<StockTableProps> = ({
   const handleConfirmAdoptDate = async (stock: StockItem) => {
     const parsedDate = parseYYMMDDToDateStr(editingAdoptDate);
     if (!parsedDate) {
-      alert("日付の形式が正しくありません。\n入力例：\n・25/01/04 (年下2桁/月/日)\n・25-01-04\n・250104 (6桁連続)");
+      alert('日付の形式が正しくありません。\n入力例：\n・25/01/04 (年下2桁/月/日)\n・25-01-04\n・250104 (6桁連続)');
       return;
     }
 
@@ -177,40 +171,29 @@ export const StockTable: React.FC<StockTableProps> = ({
       if (price !== null && price > 0) {
         newAdoptPrice = price;
       }
-    } catch (e) {
+    } catch {
       // ignore
     }
 
     const changeAdoptPct = newAdoptPrice > 0 ? Number((((stock.currentPrice - newAdoptPrice) / newAdoptPrice) * 100).toFixed(2)) : 0;
 
-    const updated = localStocks.map((s) => {
-      if (s.id === stock.id) {
-        return {
-          ...s,
-          adoptDate: parsedDate,
-          adoptPrice: newAdoptPrice,
-          changeAdoptPct
-        };
-      }
-      return s;
-    });
+    const updatedStock: StockItem = {
+      ...stock,
+      adoptDate: parsedDate,
+      adoptPrice: newAdoptPrice,
+      changeAdoptPct
+    };
 
-    setLocalStocks(updated);
-    saveStocks(updated);
+    onUpdateStock(updatedStock);
     setEditingAdoptId(null);
   };
 
-  /**
-   * 銘柄を別のタブに移動し、日時・移動元・移動先をIRメモ履歴に自動で記録する関数
-   */
   const handleMoveTab = (stock: StockItem, targetTabId: string) => {
     if (isReadOnly) return;
 
-    // タブ名を取得
     const sourceTabName = tabs.find(t => t.id === stock.tabId)?.name || '不明';
     const targetTabName = tabs.find(t => t.id === targetTabId)?.name || '不明';
 
-    // 削除ボタンと同様に確認画面を挟む
     if (!window.confirm(`銘柄「${stock.name} (${stock.code})」を「${sourceTabName}」から「${targetTabName}」へ移動しますか？`)) {
       return;
     }
@@ -226,23 +209,19 @@ export const StockTable: React.FC<StockTableProps> = ({
     let nextAdoptPrice = stock.adoptPrice;
     let nextAdoptDate = stock.adoptDate;
 
-    // 30銘柄から離脱（外した）した場合：その日の終値とパフォーマンス(%)を自動記録
     if (stock.tabId === 'tab-30' && targetTabId !== 'tab-30') {
       const exitPrice = stock.currentPrice;
       const startPrice = stock.adoptPrice > 0 ? stock.adoptPrice : stock.currentPrice;
       const perfPct = startPrice > 0 ? Number((((exitPrice - startPrice) / startPrice) * 100).toFixed(2)) : 0;
       const perfStr = perfPct > 0 ? `+${perfPct}%` : `${perfPct}%`;
-      
+
       logContent = `${dateStrYYMMDD} に「${sourceTabName}」から「${targetTabName}」へ移動（除外）しました。離脱終値: ¥${exitPrice.toLocaleString()} (採用時価格: ¥${startPrice.toLocaleString()} パフォーマンス: ${perfStr})`;
-    }
-    // 30銘柄へ採用（追加）した場合：その日の現在値を採用価格・採用日として自動ログ記録
-    else if (targetTabId === 'tab-30') {
+    } else if (targetTabId === 'tab-30') {
       nextAdoptPrice = stock.currentPrice;
       nextAdoptDate = dateStrFull;
       logContent = `${dateStrYYMMDD} に「${sourceTabName}」から「${targetTabName}」へ移動（採用）しました。採用時終値: ¥${stock.currentPrice.toLocaleString()}`;
     }
 
-    // 歴史（IRコメント）に自動で移動ログを追記
     const moveLog = {
       id: `movelog-${stock.code}-${Date.now()}`,
       date: dateStrFull,
@@ -359,10 +338,10 @@ export const StockTable: React.FC<StockTableProps> = ({
                       <span style={{ fontWeight: 800, color: 'var(--accent-cyan)' }} className="price-num">
                         {stock.code}
                       </span>
-                      <span 
-                        style={{ 
-                          fontSize: '0.78rem', 
-                          fontWeight: 700, 
+                      <span
+                        style={{
+                          fontSize: '0.78rem',
+                          fontWeight: 700,
                           color: '#fff',
                           display: 'inline-block',
                           maxWidth: '110px',
@@ -426,39 +405,47 @@ export const StockTable: React.FC<StockTableProps> = ({
                     <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.1 }}>
                       {renderChangeText(stock.changeAdoptPct, stock.adoptPrice)}
                       {editingAdoptId === stock.id ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '2px', marginTop: '2px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '2px', flexWrap: 'nowrap' }}>
                           <input
-                            type="text"
-                            value={editingAdoptDate}
+                            type="date"
+                            value={parseYYMMDDToDateStr(editingAdoptDate) || editingAdoptDate}
                             onChange={(e) => setEditingAdoptDate(e.target.value)}
-                            placeholder="25/01/04"
-                            autoFocus
-                            onFocus={(e) => e.target.select()}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
                                 e.preventDefault();
-                                handleConfirmAdoptDate(stock); // Enterキーで自動確定
+                                handleConfirmAdoptDate(stock);
                               } else if (e.key === 'Escape') {
-                                setEditingAdoptId(null); // Escキーで自動キャンセル
+                                setEditingAdoptId(null);
                               }
                             }}
-                            style={{ fontSize: '0.68rem', padding: '1px 2px', background: '#0f172a', color: '#fff', border: '1px solid var(--accent-cyan)', width: '70px' }}
+                            style={{
+                              fontSize: '0.75rem',
+                              padding: '2px 4px',
+                              background: '#0f172a',
+                              color: '#fff',
+                              border: '1px solid var(--accent-cyan)',
+                              borderRadius: '4px',
+                              colorScheme: 'dark',
+                              width: '110px'
+                            }}
+                            autoFocus
+                            title="カレンダーから採用日を選択"
                           />
                           <button
                             className="btn btn-primary"
                             onClick={() => handleConfirmAdoptDate(stock)}
-                            style={{ padding: '1px 4px', fontSize: '0.68rem', background: '#10b981', borderColor: '#10b981' }}
+                            style={{ padding: '2px 6px', fontSize: '0.68rem', background: '#10b981', borderColor: '#10b981' }}
                             title="変更を確定"
                           >
-                            <Check size={10} />
+                            <Check size={11} />
                           </button>
                           <button
                             className="btn btn-secondary"
                             onClick={() => setEditingAdoptId(null)}
-                            style={{ padding: '1px 4px', fontSize: '0.68rem' }}
+                            style={{ padding: '2px 6px', fontSize: '0.68rem' }}
                             title="キャンセル"
                           >
-                            <X size={10} />
+                            <X size={11} />
                           </button>
                         </div>
                       ) : (
@@ -466,10 +453,10 @@ export const StockTable: React.FC<StockTableProps> = ({
                           onClick={() => {
                             if (isReadOnly) return;
                             setEditingAdoptId(stock.id);
-                            setEditingAdoptDate(formatYYMMDD(stock.adoptDate));
+                            setEditingAdoptDate(stock.adoptDate || formatYYMMDD(stock.adoptDate));
                           }}
                           style={{ fontSize: '0.68rem', color: 'var(--text-muted)', cursor: isReadOnly ? 'default' : 'pointer', textDecoration: isReadOnly ? 'none' : 'underline' }}
-                          title="クリックして採用日を変更 (確定ボタン付き)"
+                          title="クリックして採用日を編集 (カレンダー/手入力)"
                         >
                           {formatYYMMDD(stock.adoptDate)} {stock.adoptPrice > 0 ? `¥${stock.adoptPrice.toLocaleString()}` : '¥-'} <Calendar size={10} style={{ display: 'inline' }} />
                         </span>
@@ -486,18 +473,17 @@ export const StockTable: React.FC<StockTableProps> = ({
                   {!isReadOnly && (
                     <td onClick={(e) => e.stopPropagation()}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                        {/* 該当銘柄以外の別タブへの移動ボタン群を動的配置 */}
                         {tabs.filter(t => t.id !== stock.tabId).map(t => {
                           const badgeColor = t.id === 'tab-30' ? '#38bdf8' : t.id === 'tab-a' ? '#a78bfa' : '#34d399';
-                          const buttonLabel = t.name.replace('銘柄', ''); // 'A銘柄' -> 'A'
+                          const buttonLabel = t.name.replace('銘柄', '');
                           return (
                             <button
                               key={t.id}
                               className="btn btn-secondary btn-sm"
                               onClick={() => handleMoveTab(stock, t.id)}
-                              style={{ 
-                                padding: '2px 5px', 
-                                fontSize: '0.68rem', 
+                              style={{
+                                padding: '2px 5px',
+                                fontSize: '0.68rem',
                                 background: 'rgba(255, 255, 255, 0.05)',
                                 borderColor: 'rgba(255, 255, 255, 0.12)',
                                 color: badgeColor,

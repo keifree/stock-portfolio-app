@@ -44,6 +44,15 @@ export interface HistoricalPoint {
   price: number;
 }
 
+export interface DistributionComment {
+  id: string;
+  date: string; // 日付 YYYY-MM-DD
+  title: string; // タイトル (自由入力)
+  link?: string; // 配信リンク (自由入力)
+  comment: string; // コメント (大きめ)
+  createdAt: string;
+}
+
 export interface StockItem {
   id: string;
   code: string; // 銘柄コード (例: "7203", "9984", "AAPL")
@@ -71,6 +80,7 @@ export interface StockItem {
   financialNotes: FinancialQuarterNote[]; // 決算・IRコメント
   irComments: IRComment[]; // 各種ログ一覧
   featureNotes?: FeatureNote[]; // 銘柄特徴・分析
+  distributionComments?: DistributionComment[]; // 配信コメント
   chartHistory?: HistoricalPoint[]; // チャート表示用過去株価履歴
   
   updatedAt: string; // データ最終更新時刻

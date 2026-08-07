@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { FinancialQuarterNote } from '../types';
 import { parseAndImportHorizontalFinancialCSV } from '../services/storage';
-import { Plus, Trash2, Pin, Check, X, Save, MessageSquare, Edit3, Upload } from 'lucide-react';
+import { Plus, Trash2, Pin, Check, X, Save, MessageSquare, Edit3, Upload, Calendar, Search, Filter } from 'lucide-react';
 
 interface FinancialNotesProps {
   notes: FinancialQuarterNote[];
@@ -20,6 +20,10 @@ export const FinancialNotes: React.FC<FinancialNotesProps> = ({
   const [evaluation, setEvaluation] = useState<'未選択' | 'ポジ' | 'ニュートラル' | 'ネガ'>('未選択');
   const [comment, setComment] = useState('');
   const [pinned, setPinned] = useState(false);
+
+  // 年絞り込み・フリーワード検索ステート
+  const [selectedYear, setSelectedYear] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   // 編集モード用の状態
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -120,7 +124,38 @@ export const FinancialNotes: React.FC<FinancialNotesProps> = ({
     reader.readAsText(file, 'UTF-8');
   };
 
-  const sortedNotes = [...notes].sort((a, b) => {
+  // 年の選択肢リストを動的抽出
+  const availableYears = Array.from(
+    new Set(
+      notes
+        .map((n) => {
+          const d = n.date || n.releaseDate || '';
+          const match = d.match(/^(\d{4})/);
+          return match ? match[1] : null;
+        })
+        .filter((y): y is string => y !== null)
+    )
+  ).sort((a, b) => b.localeCompare(a));
+
+  // フィルタリング処理
+  const filteredNotes = notes.filter((n) => {
+    const d = n.date || n.releaseDate || '';
+    if (selectedYear !== 'ALL' && !d.startsWith(selectedYear)) {
+      return false;
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      const t = (n.title || n.period || '').toLowerCase();
+      const c = (n.comment || n.summaryNote || '').toLowerCase();
+      const evalText = (n.evaluation || '').toLowerCase();
+      if (!t.includes(q) && !c.includes(q) && !evalText.includes(q)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const sortedNotes = [...filteredNotes].sort((a, b) => {
     const pinA = a.pinned ? 1 : 0;
     const pinB = b.pinned ? 1 : 0;
     if (pinA !== pinB) return pinB - pinA;
@@ -156,6 +191,92 @@ export const FinancialNotes: React.FC<FinancialNotesProps> = ({
             )}
           </div>
         )}
+      </div>
+
+      {/* フィルター・検索コントロールバー */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+          flexWrap: 'wrap',
+          marginBottom: '16px',
+          background: 'rgba(15, 23, 42, 0.6)',
+          padding: '10px 14px',
+          borderRadius: '10px',
+          border: '1px solid rgba(255, 255, 255, 0.08)'
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', flex: 1 }}>
+          {/* 年数絞り込み */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Calendar size={14} style={{ color: 'var(--accent-cyan)' }} />
+            <select
+              className="input-field"
+              value={selectedYear}
+              onChange={(e) => setSelectedYear(e.target.value)}
+              style={{ padding: '5px 10px', fontSize: '0.82rem' }}
+            >
+              <option value="ALL">📅 すべての年 ({notes.length}件)</option>
+              {availableYears.map((yr) => (
+                <option key={yr} value={yr}>
+                  {yr}年
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* キーワード検索 */}
+          <div style={{ position: 'relative', flex: 1, minWidth: '180px' }}>
+            <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input
+              type="text"
+              className="input-field"
+              placeholder="タイトル・コメントで検索..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{ paddingLeft: '30px', paddingRight: searchQuery ? '26px' : '10px', fontSize: '0.82rem', width: '100%' }}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                style={{
+                  position: 'absolute',
+                  right: '8px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem'
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* ヒット件数 ＆ クリアボタン */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          <span>
+            表示: <strong style={{ color: '#fff' }}>{sortedNotes.length}</strong> / {notes.length} 件
+          </span>
+          {(selectedYear !== 'ALL' || searchQuery) && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                setSelectedYear('ALL');
+                setSearchQuery('');
+              }}
+              style={{ padding: '2px 8px', fontSize: '0.75rem', borderRadius: '4px' }}
+            >
+              クリア
+            </button>
+          )}
+        </div>
       </div>
 
       {isAdding && (
